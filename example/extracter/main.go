@@ -37,17 +37,17 @@ import (
 //
 // Parameters:
 //
-//	index - The sequence number of the subtitle entry
-//	packet - The Matroska packet containing subtitle data with timing information
+//	index int: The sequence number of the subtitle entry.
+//	packet *matroska.Packet: The Matroska packet containing subtitle data with timing information.
 //
 // Returns:
 //
-//	A string containing the formatted SRT entry with proper timing and text
+//	string: A string containing the formatted SRT entry with proper timing and text.
 //
 // The function handles:
-//   - Converting Matroska timestamps (in milliseconds) to SRT time format
-//   - Cleaning subtitle text by converting CRLF to LF
-//   - Ensuring empty subtitles are represented with a space character
+//   - Converting Matroska timestamps (in milliseconds) to SRT time format.
+//   - Cleaning subtitle text by converting CRLF to LF.
+//   - Ensuring empty subtitles are represented with a space character.
 func formatSRTEntry(index int, packet *matroska.Packet) string {
 	// Matroska timestamps are already in milliseconds (with TimecodeScale=1000000)
 	startMs := packet.StartTime
@@ -72,11 +72,11 @@ func formatSRTEntry(index int, packet *matroska.Packet) string {
 //
 // Parameters:
 //
-//	ms - Time duration in milliseconds
+//	ms uint64: Time duration in milliseconds.
 //
 // Returns:
 //
-//	A string formatted as "HH:MM:SS,mmm" where:
+//	string: A string formatted as "HH:MM:SS,mmm" where:
 //	  HH - Hours (zero-padded to 2 digits)
 //	  MM - Minutes (zero-padded to 2 digits)
 //	  SS - Seconds (zero-padded to 2 digits)
@@ -84,7 +84,7 @@ func formatSRTEntry(index int, packet *matroska.Packet) string {
 //
 // Example:
 //
-//	formatSRTTime(3661123) returns "01:01:01,123"
+//	formatSRTTime(3661123) returns "01:01:01,123".
 func formatSRTTime(ms uint64) string {
 	hours := ms / 3600000
 	ms %= 3600000
@@ -109,17 +109,17 @@ var videoCodecPrivate []byte
 //
 // The function handles both H.264 and H.265 video formats, automatically detecting
 // the codec type and applying appropriate conversion rules:
-//   - H.264: Uses 4-byte start codes for all NAL units
+//   - H.264: Uses 4-byte start codes for all NAL units.
 //   - H.265: Uses 4-byte start codes for VPS, SPS, PPS, and the first AUD;
-//     uses 3-byte start codes for other NAL units
+//     uses 3-byte start codes for other NAL units.
 //
 // Parameters:
 //
-//	data - Video data in AVCC format with length-prefixed NAL units
+//	data []byte: Video data in AVCC format with length-prefixed NAL units.
 //
 // Returns:
 //
-//	Video data converted to Annex B format with appropriate start codes
+//	[]byte: Video data converted to Annex B format with appropriate start codes.
 //
 // The function uses global state (firstAUDSeen) to track whether the first AUD
 // (Access Unit Delimiter) has been processed, which affects start code selection
@@ -204,23 +204,23 @@ func convertAVCCToAnnexB(data []byte) []byte {
 // and converts them from AVCC's length-prefixed format to Annex B's start code format.
 //
 // The AVCC configuration format:
-//   - Byte 0: Configuration version (always 1)
-//   - Byte 1: AVC profile indication
-//   - Byte 2: Profile compatibility
-//   - Byte 3: AVC level indication
-//   - Byte 4: NAL unit length size minus one (usually 3, meaning 4-byte lengths)
-//   - Byte 5: Number of SPS NAL units (lower 5 bits)
-//   - Following: SPS data (each with 2-byte length prefix)
-//   - Following: Number of PPS NAL units
-//   - Following: PPS data (each with 2-byte length prefix)
+//   - Byte 0: Configuration version (always 1).
+//   - Byte 1: AVC profile indication.
+//   - Byte 2: Profile compatibility.
+//   - Byte 3: AVC level indication.
+//   - Byte 4: NAL unit length size minus one (usually 3, meaning 4-byte lengths).
+//   - Byte 5: Number of SPS NAL units (lower 5 bits).
+//   - Following: SPS data (each with 2-byte length prefix).
+//   - Following: Number of PPS NAL units.
+//   - Following: PPS data (each with 2-byte length prefix).
 //
 // Parameters:
 //
-//	config - AVCC configuration data containing SPS and PPS NAL units
+//	config []byte: AVCC configuration data containing SPS and PPS NAL units.
 //
 // Returns:
 //
-//	SPS and PPS NAL units in Annex B format with 4-byte start codes (0x00000001)
+//	[]byte: SPS and PPS NAL units in Annex B format with 4-byte start codes (0x00000001).
 //
 // The function returns an empty byte slice if the configuration data is invalid
 // or too short to contain valid SPS/PPS information.
@@ -283,22 +283,22 @@ func convertAVCCConfigToAnnexB(config []byte) []byte {
 // main demonstrates a complete workflow for extracting tracks from a Matroska file.
 //
 // This function shows how to:
-//   - Open and parse a Matroska file
-//   - Extract file information and track details
-//   - Create output files for each track
-//   - Process packets based on track type (video, audio, subtitle)
-//   - Apply appropriate format conversions for different track types
-//   - Validate output by comparing with reference files
+//   - Open and parse a Matroska file.
+//   - Extract file information and track details.
+//   - Create output files for each track.
+//   - Process packets based on track type (video, audio, subtitle).
+//   - Apply appropriate format conversions for different track types.
+//   - Validate output by comparing with reference files.
 //
 // The function processes three types of tracks:
-//   - Video tracks: Convert from AVCC to Annex B format, write codec private data
-//   - Audio tracks: Write raw data without conversion
-//   - Subtitle tracks: Convert to SRT format with proper timing
+//   - Video tracks: Convert from AVCC to Annex B format, write codec private data.
+//   - Audio tracks: Write raw data without conversion.
+//   - Subtitle tracks: Convert to SRT format with proper timing.
 //
 // Global variables are used to track state during processing:
-//   - firstAUDSeen: Tracks whether the first AUD has been processed for H.265
-//   - videoCodecPrivateWritten: Tracks whether video codec private data has been written
-//   - videoCodecPrivate: Stores the video codec private data for writing
+//   - firstAUDSeen bool: Tracks whether the first AUD has been processed for H.265.
+//   - videoCodecPrivateWritten bool: Tracks whether video codec private data has been written.
+//   - videoCodecPrivate []byte: Stores the video codec private data for writing.
 //
 // The function includes progress reporting and validation against reference files
 // to demonstrate the accuracy of the extraction process.

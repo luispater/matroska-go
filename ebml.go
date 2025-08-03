@@ -441,7 +441,14 @@ func (el *EBMLElement) ReadInt() int64 {
 	return int64(result)
 }
 
-// ReadFloat reads a floating-point number from element data
+// ReadFloat reads a floating-point number from the element's data.
+//
+// This method interprets the element's data as a big-endian floating-point number
+// (either 32-bit or 64-bit) and returns its value. If the element's data is empty
+// or its length is not 4 or 8 bytes, it returns 0.0.
+//
+// Returns:
+//   - The floating-point value stored in the element's data.
 func (el *EBMLElement) ReadFloat() float64 {
 	if len(el.Data) == 0 {
 		return 0.0
@@ -459,7 +466,13 @@ func (el *EBMLElement) ReadFloat() float64 {
 	}
 }
 
-// ReadString reads a UTF-8 string from element data
+// ReadString reads a UTF-8 string from the element's data.
+//
+// This method interprets the element's data as a UTF-8 encoded string.
+// It removes any null terminator if present at the end of the data.
+//
+// Returns:
+//   - The string value stored in the element's data.
 func (el *EBMLElement) ReadString() string {
 	// Remove null terminator if present
 	data := el.Data
@@ -469,12 +482,28 @@ func (el *EBMLElement) ReadString() string {
 	return string(data)
 }
 
-// ReadBytes returns the raw element data
+// ReadBytes returns the raw byte slice of the element's data.
+//
+// This method provides direct access to the uninterpreted byte data
+// contained within the EBML element.
+//
+// Returns:
+//   - A byte slice containing the raw data of the element.
 func (el *EBMLElement) ReadBytes() []byte {
 	return el.Data
 }
 
-// SkipElement skips the current element by seeking past its data
+// SkipElement skips the current element by seeking past its data in the stream.
+//
+// This method is useful for efficiently moving past elements whose content
+// is not needed for current processing. It updates the reader's internal
+// position tracker.
+//
+// Parameters:
+//   - element: The EBMLElement to skip.
+//
+// Returns:
+//   - An error if the seek operation failed.
 func (er *EBMLReader) SkipElement(element *EBMLElement) error {
 	_, err := er.r.Seek(int64(element.Size), io.SeekCurrent)
 	if err != nil {
@@ -484,7 +513,15 @@ func (er *EBMLReader) SkipElement(element *EBMLElement) error {
 	return nil
 }
 
-// ReadElementHeader reads only the element ID and size, not the data
+// ReadElementHeader reads only the element ID and size from the stream, without reading the actual data.
+//
+// This method is useful when you only need to inspect the type and size of an element
+// before deciding whether to read its full content or skip it.
+//
+// Returns:
+//   - The ID of the element.
+//   - The size of the element's data.
+//   - An error if the read operation failed.
 func (er *EBMLReader) ReadElementHeader() (uint32, uint64, error) {
 	// Read element ID (keep length marker for IDs)
 	id, err := er.ReadVIntID()
@@ -526,7 +563,15 @@ type EBMLHeader struct {
 	DocTypeReadVersion uint64 // The minimum version of the document type parser needed to read this file
 }
 
-// ReadEBMLHeader reads and parses the EBML header
+// ReadEBMLHeader reads and parses the EBML header from the stream.
+//
+// This method expects the next element in the stream to be the EBML header (IDEBMLHeader).
+// It reads the header element and then parses its child elements to populate the
+// EBMLHeader struct.
+//
+// Returns:
+//   - A pointer to the parsed EBMLHeader.
+//   - An error if reading the header fails or if the first element is not an EBML header.
 func (er *EBMLReader) ReadEBMLHeader() (*EBMLHeader, error) {
 	// Read EBML header element
 	element, err := er.ReadElement()

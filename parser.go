@@ -843,14 +843,14 @@ func (mp *MatroskaParser) ReadPacket() (*Packet, error) {
 	}
 }
 
-// parseClusterHeader parses cluster header information from the Matroska file.
+// parseClusterHeader parses the header of a Cluster element.
 //
 // A Cluster is a top-level element that contains a group of blocks (media data)
 // that are related to each other, typically by time. The cluster header contains
 // metadata about the cluster, such as the timestamp.
 //
-// This method currently resets the cluster timestamp to zero when a new cluster
-// is encountered. In a more complete implementation, it would parse the cluster
+// This method currently only resets the cluster timestamp to zero when a new cluster
+// is encountered. A more complete implementation would parse the cluster
 // header elements, such as the timestamp, and update the parser's state accordingly.
 //
 // Parameters:
@@ -858,10 +858,6 @@ func (mp *MatroskaParser) ReadPacket() (*Packet, error) {
 //
 // Returns:
 //   - error: An error if the cluster header could not be parsed.
-//
-// Note: This method is currently a simplified implementation and only resets
-// the cluster timestamp. A more complete implementation would parse additional
-// cluster header elements.
 func (mp *MatroskaParser) parseClusterHeader(size uint64) error {
 	// Reset cluster timestamp for new cluster
 	mp.clusterTimestamp = 0

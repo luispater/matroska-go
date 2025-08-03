@@ -391,7 +391,7 @@ func (d *Demuxer) GetSegmentTop() uint64 {
 	return d.parser.GetSegmentTop()
 }
 
-// GetCuesPos returna the position of the cues in the stream.
+// GetCuesPos returns the position of the cues in the stream.
 //
 // This function returns the file position (offset) where the cues element
 // begins in the Matroska file. The cues element contains indexing information
