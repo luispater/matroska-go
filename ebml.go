@@ -1,3 +1,34 @@
+// Package matroska provides functionality for parsing Matroska/EBML (Extensible Binary Meta Language) files.
+//
+// Matroska is a multimedia container format that can hold an unlimited number of video, audio,
+// picture, or subtitle tracks in one file. It is based on EBML, which is a binary format similar to XML.
+//
+// This package implements the core EBML parsing functionality, including:
+//   - Reading and parsing EBML elements
+//   - Handling variable-length integers (VINT)
+//   - Extracting different data types from elements
+//   - Reading and parsing the EBML header
+//
+// The main types in this package are:
+//   - EBMLElement: Represents a single EBML element with ID, size, and data
+//   - EBMLReader: Provides methods for reading EBML data from a stream
+//   - EBMLHeader: Represents the EBML header containing metadata about the file
+//
+// Example usage:
+//
+//	file, err := os.Open("video.mkv")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer file.Close()
+//
+//	reader := matroska.NewEBMLReader(file)
+//	header, err := reader.ReadEBMLHeader()
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+//	fmt.Printf("DocType: %s, Version: %d\n", header.DocType, header.DocTypeVersion)
 package matroska
 
 import (
@@ -9,120 +40,197 @@ import (
 )
 
 // EBML element IDs for Matroska
+//
+// These constants define the standard element IDs used in Matroska/EBML files.
+// Each ID is a unique identifier for a specific element type in the EBML structure.
 const (
-	IDEBMLHeader             = 0x1A45DFA3
-	IDEBMLVersion            = 0x4286
-	IDEBMLReadVersion        = 0x42F7
-	IDEBMLMaxIDLength        = 0x42F2
-	IDEBMLMaxSizeLength      = 0x42F3
-	IDEBMLDocType            = 0x4282
-	IDEBMLDocTypeVersion     = 0x4287
-	IDEBMLDocTypeReadVersion = 0x4285
+	// EBML Header elements
+	IDEBMLHeader             = 0x1A45DFA3 // The EBML header element
+	IDEBMLVersion            = 0x4286     // The version of EBML parser used to create the file
+	IDEBMLReadVersion        = 0x42F7     // The minimum EBML version needed to parse this file
+	IDEBMLMaxIDLength        = 0x42F2     // The maximum length of an EBML ID in bytes
+	IDEBMLMaxSizeLength      = 0x42F3     // The maximum length of an EBML size in bytes
+	IDEBMLDocType            = 0x4282     // A string that describes the type of document (e.g., "matroska")
+	IDEBMLDocTypeVersion     = 0x4287     // The version of the document type
+	IDEBMLDocTypeReadVersion = 0x4285     // The minimum version of the document type parser needed to read this file
 
-	// Segment
-	IDSegment = 0x18538067
+	// Segment elements
+	IDSegment = 0x18538067 // The root element that contains all other top-level elements
 
-	// Meta Seek Information
-	IDSeekHead = 0x114D9B74
-	IDSeek     = 0x4DBB
-	IDSeekID   = 0x53AB
-	IDSeekPos  = 0x53AC
+	// Meta Seek Information elements
+	IDSeekHead = 0x114D9B74 // Contains a list of seek points to other EBML elements
+	IDSeek     = 0x4DBB     // A single seek point to an EBML element
+	IDSeekID   = 0x53AB     // The ID of the element to seek to
+	IDSeekPos  = 0x53AC     // The position of the element in the segment
 
-	// Segment Information
-	IDSegmentInfo      = 0x1549A966
-	IDSegmentUID       = 0x73A4
-	IDSegmentFilename  = 0x7384
-	IDPrevUID          = 0x3CB923
-	IDPrevFilename     = 0x3C83AB
-	IDNextUID          = 0x3EB923
-	IDNextFilename     = 0x3E83BB
-	IDSegmentFamily    = 0x4444
-	IDChapterTranslate = 0x6924
-	IDTimestampScale   = 0x2AD7B1
-	IDDuration         = 0x4489
-	IDDateUTC          = 0x4461
-	IDTitle            = 0x7BA9
-	IDMuxingApp        = 0x4D80
-	IDWritingApp       = 0x5741
+	// Segment Information elements
+	IDSegmentInfo      = 0x1549A966 // Contains general information about the segment
+	IDSegmentUID       = 0x73A4     // A unique identifier for the segment
+	IDSegmentFilename  = 0x7384     // The filename corresponding to this segment
+	IDPrevUID          = 0x3CB923   // The UID of the previous segment
+	IDPrevFilename     = 0x3C83AB   // The filename of the previous segment
+	IDNextUID          = 0x3EB923   // The UID of the next segment
+	IDNextFilename     = 0x3E83BB   // The filename of the next segment
+	IDSegmentFamily    = 0x4444     // A family of segments this segment belongs to
+	IDChapterTranslate = 0x6924     // Contains information for translating chapter numbers
+	IDTimestampScale   = 0x2AD7B1   // The scale factor for all timestamps in the segment
+	IDDuration         = 0x4489     // The duration of the segment in timestamp units
+	IDDateUTC          = 0x4461     // The date and time the segment was created in UTC
+	IDTitle            = 0x7BA9     // The title of the segment
+	IDMuxingApp        = 0x4D80     // The name of the application used to mux the file
+	IDWritingApp       = 0x5741     // The name of the application used to write the file
 
-	// Track
-	IDTracks     = 0x1654AE6B
-	IDTrackEntry = 0xAE
-	IDTrackNum   = 0xD7
-	IDTrackUID   = 0x73C5
-	IDTrackType  = 0x83
-	IDTrackName  = 0x536E
-	IDLanguage   = 0x22B59C
-	IDCodecID    = 0x86
-	IDCodecPriv  = 0x63A2
-	IDCodecName  = 0x258688
-	IDVideo      = 0xE0
-	IDAudio      = 0xE1
+	// Track elements
+	IDTracks     = 0x1654AE6B // A top-level element containing all track entries
+	IDTrackEntry = 0xAE       // A single track entry containing information about a track
+	IDTrackNum   = 0xD7       // The track number as used in the Block header
+	IDTrackUID   = 0x73C5     // A unique identifier for the track
+	IDTrackType  = 0x83       // The type of the track (video, audio, etc.)
+	IDTrackName  = 0x536E     // The name of the track
+	IDLanguage   = 0x22B59C   // The language of the track
+	IDCodecID    = 0x86       // The ID of the codec used for this track
+	IDCodecPriv  = 0x63A2     // Private data specific to the codec
+	IDCodecName  = 0x258688   // The name of the codec used for this track
+	IDVideo      = 0xE0       // Video settings specific to this track
+	IDAudio      = 0xE1       // Audio settings specific to this track
 
-	// Video
-	IDFlagInterlaced = 0x9A
-	IDPixelWidth     = 0xB0
-	IDPixelHeight    = 0xBA
-	IDDisplayWidth   = 0x54B0
-	IDDisplayHeight  = 0x54BA
+	// Video elements
+	IDFlagInterlaced = 0x9A   // Flag indicating whether the video is interlaced
+	IDPixelWidth     = 0xB0   // The width of the encoded video frames in pixels
+	IDPixelHeight    = 0xBA   // The height of the encoded video frames in pixels
+	IDDisplayWidth   = 0x54B0 // The width of the video frames when displayed
+	IDDisplayHeight  = 0x54BA // The height of the video frames when displayed
 
-	// Audio
-	IDSamplingFrequency       = 0xB5
-	IDOutputSamplingFrequency = 0x78B5
-	IDChannels                = 0x9F
-	IDBitDepth                = 0x6264
+	// Audio elements
+	IDSamplingFrequency       = 0xB5   // The sampling frequency of the audio in Hz
+	IDOutputSamplingFrequency = 0x78B5 // The output sampling frequency of the audio in Hz
+	IDChannels                = 0x9F   // The number of audio channels
+	IDBitDepth                = 0x6264 // The number of bits per audio sample
 
-	// Cluster
-	IDCluster     = 0x1F43B675
-	IDTimestamp   = 0xE7
-	IDSimpleBlock = 0xA3
-	IDBlockGroup  = 0xA0
-	IDBlock       = 0xA1
+	// Cluster elements
+	IDCluster     = 0x1F43B675 // A cluster contains blocks of data for a specific timestamp
+	IDTimestamp   = 0xE7       // The timestamp of the cluster
+	IDSimpleBlock = 0xA3       // A block containing raw data without additional metadata
+	IDBlockGroup  = 0xA0       // A group of blocks with additional metadata
+	IDBlock       = 0xA1       // A block containing raw data
 
-	// Cues
-	IDCues     = 0x1C53BB6B
-	IDCuePoint = 0xBB
-	IDCueTime  = 0xB3
+	// Cues elements
+	IDCues     = 0x1C53BB6B // A top-level element containing all cue points
+	IDCuePoint = 0xBB       // A single cue point pointing to a specific timestamp
+	IDCueTime  = 0xB3       // The timestamp of the cue point
 
-	// Chapters
-	IDChapters = 0x1043A770
+	// Chapters elements
+	IDChapters = 0x1043A770 // A top-level element containing all chapter entries
 
-	// Tags
-	IDTags = 0x1254C367
+	// Tags elements
+	IDTags = 0x1254C367 // A top-level element containing all tags
 
-	// Attachments
-	IDAttachments = 0x1941A469
+	// Attachments elements
+	IDAttachments = 0x1941A469 // A top-level element containing all attached files
 )
 
-// EBMLElement represents an EBML element
+// EBMLElement represents an EBML element with its ID, size, and data.
+//
+// An EBML element is the basic building block of EBML files. Each element consists of:
+//   - ID: A variable-length integer that identifies the type of element
+//   - Size: A variable-length integer that specifies the size of the element's data
+//   - Data: The actual data contained within the element
+//
+// The EBMLElement struct provides methods to extract different types of data from the element,
+// such as integers, floats, strings, and raw bytes.
 type EBMLElement struct {
-	ID   uint32
-	Size uint64
-	Data []byte
+	ID   uint32 // The element ID that identifies the type of element
+	Size uint64 // The size of the element's data in bytes
+	Data []byte // The raw data contained within the element
 }
 
-// EBMLReader provides methods for reading EBML data
+// EBMLReader provides methods for reading EBML data from a stream.
+//
+// EBMLReader is the main type used for parsing EBML data. It wraps an io.ReadSeeker
+// and provides methods to read EBML elements, variable-length integers, and other
+// EBML-specific data structures.
+//
+// Example usage:
+//
+//	file, err := os.Open("video.mkv")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer file.Close()
+//
+//	reader := NewEBMLReader(file)
+//	element, err := reader.ReadElement()
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+//	fmt.Printf("Element ID: 0x%X, Size: %d\n", element.ID, element.Size)
 type EBMLReader struct {
-	r   io.ReadSeeker
-	pos int64
+	r   io.ReadSeeker // The underlying reader for the EBML data
+	pos int64         // The current position in the stream
 }
 
-// NewEBMLReader creates a new EBML reader
+// NewEBMLReader creates a new EBML reader from an io.ReadSeeker.
+//
+// This function initializes a new EBMLReader with the provided io.ReadSeeker.
+// The reader is used to read EBML data from a stream, such as a file or network connection.
+//
+// Parameters:
+//   - r: An io.ReadSeeker that provides the EBML data stream
+//
+// Returns:
+//   - A pointer to the newly created EBMLReader
+//
+// Example usage:
+//
+//	file, err := os.Open("video.mkv")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer file.Close()
+//
+//	reader := NewEBMLReader(file)
 func NewEBMLReader(r io.ReadSeeker) *EBMLReader {
 	return &EBMLReader{r: r}
 }
 
-// ReadVInt reads a variable-length integer
+// ReadVInt reads a variable-length integer from the stream.
+//
+// Variable-length integers (VINT) are used in EBML to store element sizes and other values.
+// This method reads a VINT and removes the length marker, returning only the value.
+//
+// Returns:
+//   - The value of the variable-length integer
+//   - An error if the read operation failed or the VINT is invalid
 func (er *EBMLReader) ReadVInt() (uint64, error) {
 	return er.readVInt(false)
 }
 
-// ReadVIntID reads a variable-length integer for element IDs (keeps length marker)
+// ReadVIntID reads a variable-length integer for element IDs, keeping the length marker.
+//
+// This method is similar to ReadVInt, but it preserves the length marker in the returned value.
+// It is used specifically for reading EBML element IDs, which require the length marker to be preserved.
+//
+// Returns:
+//   - The value of the variable-length integer including the length marker
+//   - An error if the read operation failed or the VINT is invalid
 func (er *EBMLReader) ReadVIntID() (uint64, error) {
 	return er.readVInt(true)
 }
 
-// readVInt reads a variable-length integer
+// readVInt reads a variable-length integer from the stream.
+//
+// This is the internal implementation for reading variable-length integers (VINT).
+// A VINT consists of a length marker in the first byte followed by the actual value.
+// The length marker indicates how many bytes are used to store the value.
+//
+// Parameters:
+//   - keepLengthMarker: If true, the length marker is included in the returned value.
+//     If false, only the value part is returned.
+//
+// Returns:
+//   - The value of the variable-length integer
+//   - An error if the read operation failed or the VINT is invalid
 func (er *EBMLReader) readVInt(keepLengthMarker bool) (uint64, error) {
 	var b [1]byte
 	if _, err := er.r.Read(b[:]); err != nil {
@@ -189,7 +297,24 @@ func (er *EBMLReader) readVInt(keepLengthMarker bool) (uint64, error) {
 	return result, nil
 }
 
-// ReadElement reads an EBML element
+// ReadElement reads a complete EBML element from the stream.
+//
+// This method reads an EBML element, which consists of an ID, a size, and the element data.
+// It first reads the element ID using ReadVIntID, then reads the element size using ReadVInt,
+// and finally reads the element data based on the size.
+//
+// Returns:
+//   - A pointer to the EBMLElement that was read
+//   - An error if the read operation failed or the element is invalid
+//
+// Example usage:
+//
+//	element, err := reader.ReadElement()
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+//	fmt.Printf("Element ID: 0x%X, Size: %d\n", element.ID, element.Size)
 func (er *EBMLReader) ReadElement() (*EBMLElement, error) {
 	// Read element ID (keep length marker for IDs)
 	id, err := er.ReadVIntID()
@@ -225,7 +350,18 @@ func (er *EBMLReader) ReadElement() (*EBMLElement, error) {
 	}, nil
 }
 
-// Seek moves the reader to the specified position
+// Seek moves the reader to the specified position in the stream.
+//
+// This method implements the io.Seeker interface, allowing random access to the EBML data.
+// It delegates to the underlying io.ReadSeeker and updates the internal position tracker.
+//
+// Parameters:
+//   - offset: The offset to seek to, relative to the whence parameter
+//   - whence: The reference point for the offset (0 = beginning, 1 = current, 2 = end)
+//
+// Returns:
+//   - The new position relative to the beginning of the stream
+//   - An error if the seek operation failed
 func (er *EBMLReader) Seek(offset int64, whence int) (int64, error) {
 	pos, err := er.r.Seek(offset, whence)
 	if err != nil {
@@ -235,12 +371,29 @@ func (er *EBMLReader) Seek(offset int64, whence int) (int64, error) {
 	return pos, nil
 }
 
-// Position returns the current position
+// Position returns the current position in the stream.
+//
+// This method returns the current position of the reader in the stream,
+// which is tracked internally and updated after each read or seek operation.
+//
+// Returns:
+//   - The current position in the stream as a byte offset from the beginning
 func (er *EBMLReader) Position() int64 {
 	return er.pos
 }
 
-// ReadUInt reads an unsigned integer from element data
+// ReadUInt reads an unsigned integer from the element's data.
+//
+// This method interprets the element's data as a big-endian unsigned integer
+// and returns its value. If the element's data is empty, it returns 0.
+//
+// Returns:
+//   - The unsigned integer value stored in the element's data
+//
+// Example usage:
+//
+//	value := element.ReadUInt()
+//	fmt.Printf("Value: %d\n", value)
 func (el *EBMLElement) ReadUInt() uint64 {
 	if len(el.Data) == 0 {
 		return 0
@@ -348,15 +501,29 @@ func (er *EBMLReader) ReadElementHeader() (uint32, uint64, error) {
 	return uint32(id), size, nil
 }
 
-// EBMLHeader represents the EBML header
+// EBMLHeader represents the EBML header containing metadata about the file.
+//
+// The EBML header is the first element in an EBML file and contains information
+// about how to parse the rest of the file. It includes the EBML version, document type,
+// and other metadata that helps parsers understand the structure of the file.
+//
+// Example usage:
+//
+//	reader := NewEBMLReader(file)
+//	header, err := reader.ReadEBMLHeader()
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+//	fmt.Printf("DocType: %s, Version: %d\n", header.DocType, header.DocTypeVersion)
 type EBMLHeader struct {
-	Version            uint64
-	ReadVersion        uint64
-	MaxIDLength        uint64
-	MaxSizeLength      uint64
-	DocType            string
-	DocTypeVersion     uint64
-	DocTypeReadVersion uint64
+	Version            uint64 // The version of EBML parser used to create the file
+	ReadVersion        uint64 // The minimum EBML version needed to parse this file
+	MaxIDLength        uint64 // The maximum length of an EBML ID in bytes
+	MaxSizeLength      uint64 // The maximum length of an EBML size in bytes
+	DocType            string // A string that describes the type of document (e.g., "matroska")
+	DocTypeVersion     uint64 // The version of the document type
+	DocTypeReadVersion uint64 // The minimum version of the document type parser needed to read this file
 }
 
 // ReadEBMLHeader reads and parses the EBML header
@@ -405,11 +572,26 @@ func (er *EBMLReader) ReadEBMLHeader() (*EBMLHeader, error) {
 	return header, nil
 }
 
-// seekableReader wraps a bytes.Reader to implement io.ReadSeeker
+// seekableReader wraps a bytes.Reader to implement io.ReadSeeker.
+//
+// This is a helper type that allows a bytes.Reader to be used as an io.ReadSeeker,
+// which is required by the EBMLReader. It simply delegates all operations to the
+// underlying bytes.Reader.
 type seekableReader struct {
-	*bytes.Reader
+	*bytes.Reader // The underlying bytes.Reader
 }
 
+// Seek implements the io.Seeker interface for seekableReader.
+//
+// It delegates the Seek operation to the underlying bytes.Reader.
+//
+// Parameters:
+//   - offset: The offset to seek to, relative to the whence parameter
+//   - whence: The reference point for the offset (0 = beginning, 1 = current, 2 = end)
+//
+// Returns:
+//   - The new position relative to the beginning of the stream
+//   - An error if the seek operation failed
 func (sr *seekableReader) Seek(offset int64, whence int) (int64, error) {
 	return sr.Reader.Seek(offset, whence)
 }

@@ -1,373 +1,550 @@
+// Package matroska defines all the data structures and constants used in the Matroska/EBML project.
+//
+// Matroska is an extensible open standard Audio/video container format. This package provides
+// the core types and constants needed to parse, create, and manipulate Matroska files.
+//
+// The package includes definitions for:
+//   - Compression types used in Matroska tracks
+//   - Track types (video, audio, subtitle)
+//   - Tag target types
+//   - Seek types for navigation
+//   - Packet flags for demuxed data
+//   - Core data structures like Packet, TrackInfo, SegmentInfo, Attachment, Chapter, Cue, and Tag
+//
+// These types are used throughout the project to represent different aspects of Matroska files
+// and serve as the central location for all data type definitions used by other files in the project.
 package matroska
 
 // Matroska compression types
+//
+// These constants define the compression algorithms that can be applied to Matroska tracks.
 const (
-	CompZlib    = 0
-	CompBzip    = 1
-	CompLZO1X   = 2
+	// CompZlib indicates zlib compression (RFC 1950).
+	CompZlib = 0
+	// CompBzip indicates bzip2 compression.
+	CompBzip = 1
+	// CompLZO1X indicates LZO1X compression.
+	CompLZO1X = 2
+	// CompPrepend indicates header stripping compression where data is prepended during decompression.
 	CompPrepend = 3
 )
 
 // Track types
+//
+// These constants define the different types of tracks that can be present in a Matroska file.
 const (
-	TypeVideo    = 1
-	TypeAudio    = 2
+	// TypeVideo indicates a video track.
+	TypeVideo = 1
+	// TypeAudio indicates an audio track.
+	TypeAudio = 2
+	// TypeSubtitle indicates a subtitle track.
 	TypeSubtitle = 17
 )
 
 // Tag target types
+//
+// These constants define the different types of targets that Matroska tags can be applied to.
 const (
-	TargetTrack      = 0
-	TargetChapter    = 1
+	// TargetTrack indicates that the tag applies to a specific track.
+	TargetTrack = 0
+	// TargetChapter indicates that the tag applies to a specific chapter.
+	TargetChapter = 1
+	// TargetAttachment indicates that the tag applies to a specific attachment.
 	TargetAttachment = 2
-	TargetEdition    = 3
+	// TargetEdition indicates that the tag applies to a specific edition.
+	TargetEdition = 3
 )
 
 // Seek types
 //
-// They do what they say on the tin.
+// These constants define the different seeking behaviors that can be used when navigating
+// through a Matroska file. They control how the player handles seeking operations.
 const (
-	SeekToPrevKeyFrame       = 1
+	// SeekToPrevKeyFrame seeks to the previous key frame before the requested position.
+	SeekToPrevKeyFrame = 1
+	// SeekToPrevKeyFrameStrict seeks to the previous key frame before the requested position,
+	// but does not allow going beyond that point even if it means displaying nothing.
 	SeekToPrevKeyFrameStrict = 2
 )
 
-// Possible flags returned with a matroksa.Packet in its
-// Flags member.
+// Packet flags
+//
+// These constants define flags that can be returned with a matroska.Packet in its Flags member.
+// They provide additional information about the packet's properties and characteristics.
 const (
+	// UnknownStart indicates that the packet starts at an unknown position.
 	UnknownStart = 0x00000001
-	UnknownEnd   = 0x00000002
-	KF           = 0x00000004
-	GAP          = 0x00800000
-	StreamMask   = 0xff000000
-	StreamShift  = 24
+	// UnknownEnd indicates that the packet ends at an unknown position.
+	UnknownEnd = 0x00000002
+	// KF indicates that the packet is a key frame.
+	KF = 0x00000004
+	// GAP indicates that the packet is a gap packet, which should be skipped during playback.
+	GAP = 0x00800000
+	// StreamMask is a bitmask used to extract the stream number from the Flags field.
+	StreamMask = 0xff000000
+	// StreamShift is the number of bits to shift right to extract the stream number from the Flags field.
+	StreamShift = 24
 )
 
-// Packet contains a demuxed packet
+// Packet contains a demuxed packet from a Matroska file.
+//
+// A Packet represents a single unit of media data that has been extracted (demuxed) from
+// a Matroska container. It contains all the necessary information to process the media data,
+// including timing information, track association, and the actual data payload.
 type Packet struct {
-	// The track this packet belongs to.
+	// Track is the track number this packet belongs to.
+	// This corresponds to the TrackInfo.Number of the track.
 	Track uint8
-	// The start time of this packet.
+	// StartTime is the start time of this packet in nanoseconds.
+	// This is the timestamp when the packet should be presented.
 	StartTime uint64
-	// The end time of this packet.
+	// EndTime is the end time of this packet in nanoseconds.
+	// This is the timestamp when the packet should stop being presented.
 	EndTime uint64
-	// The position in the input stream where this packet
-	// is located.
+	// FilePos is the position in the input stream where this packet is located.
+	// This can be useful for seeking or debugging purposes.
 	FilePos uint64
-	// The packet data.
+	// Data contains the actual packet data.
+	// This is the raw media data that needs to be decoded by the appropriate codec.
 	Data []byte
-	// Any packet flags. See constants.
+	// Flags contains any packet flags. See the packet flag constants for details.
+	// These flags provide additional information about the packet's properties.
 	Flags uint32
-	// Whether this packet can be discarded.
+	// Discard indicates whether this packet can be discarded.
+	// A non-zero value suggests that the packet can be safely discarded without affecting playback.
 	Discard int64
 }
 
-// TrackInfo contains information about a track.
+// TrackInfo contains information about a track in a Matroska file.
+//
+// A TrackInfo structure holds all metadata and configuration information for a single
+// track within a Matroska file. This includes general track properties, codec information,
+// and type-specific settings for video, audio, or subtitle tracks.
 type TrackInfo struct {
-	// The track number.
+	// Number is the track number used to identify this track within the Matroska file.
+	// Track numbers are unique within a segment and are used to associate packets with tracks.
 	Number uint8
-	// the track type. See constants.
+	// Type is the track type. See the track type constants (TypeVideo, TypeAudio, TypeSubtitle).
 	Type uint8
-	// Whether or not to overlay this track.
+	// TrackOverlay specifies whether this track should be overlaid on another track.
+	// This is typically used for subtitle or menu tracks that need to be displayed over video.
 	TrackOverlay uint8
-	// The UID.
+	// UID is a unique identifier for this track.
+	// This allows tracks to be referenced even if their numbers change.
 	UID uint64
-	// The minimum amount of frames a player should keep around to
-	// be able to play back this file properly, e.g. the min DPB
-	// size.
+	// MinCache is the minimum amount of frames a player should keep around to
+	// be able to play back this file properly, e.g. the min DPB (Decoded Picture Buffer) size.
 	MinCache uint64
-	// The largest possible size a player could need for its cache
-	// in order to play back this file.
+	// MaxCache is the largest possible size a player could need for its cache
+	// in order to play back this file smoothly.
 	MaxCache uint64
-	// The track's default duration, which can be used, for example
-	// to calculate the duration of the last packet.
+	// DefaultDuration is the track's default duration in nanoseconds, which can be used,
+	// for example, to calculate the duration of the last packet.
 	DefaultDuration uint64
-	// Any inherent delay required by the codec.
+	// CodecDelay is any inherent delay required by the codec in nanoseconds.
+	// This is used to ensure proper audio/video synchronization.
 	CodecDelay uint64
-	// Any pre-roll that must be applied after seeking for
-	// this codec.
+	// SeekPreRoll is any pre-roll that must be applied after seeking for this codec.
+	// This ensures that the decoder has enough data to start playback correctly after a seek.
 	SeekPreRoll uint64
-	// The timescale for this track's timecodes.
+	// TimecodeScale is the timescale for this track's timecodes.
+	// This is used to convert between the track's internal timecode and actual time.
 	TimecodeScale float64
-	// Codec private data, to be passed to decoders.
+	// CodecPrivate contains codec-specific private data that should be passed to decoders.
+	// This typically includes initialization data required by the codec.
 	CodecPrivate []byte
-	// Track compression method. See constants.
+	// CompMethod is the track compression method. See the compression method constants.
 	CompMethod uint32
-	// Any private data that should be passed to the decompressor
+	// CompMethodPrivate contains any private data that should be passed to the decompressor
 	// used to decompress the track.
 	CompMethodPrivate []byte
-	// Not useful
+	// MaxBlockAdditionID is the maximum ID of the BlockAdditional elements for this track.
+	// This is used to identify additional data blocks associated with the track.
 	MaxBlockAdditionID uint32
 
-	// Whether or not this track is enabled.
+	// Enabled indicates whether this track is enabled and should be played.
 	Enabled bool
-	// Whether or not this track is on by default.
+	// Default indicates whether this track is on by default.
+	// If true, the track should be enabled unless the user explicitly disables it.
 	Default bool
-	// Whether or not this track is forced on.
+	// Forced indicates whether this track is forced on.
+	// Forced tracks are typically used for subtitles that must be displayed regardless of user preferences.
 	Forced bool
-	// Whether this track is laced.
+	// Lacing indicates whether this track uses lacing.
+	// Lacing is a method of reducing overhead by storing multiple small blocks in a single frame.
 	Lacing bool
-	// Whether or not this track as Error Resiliance capabilities.
+	// DecodeAll indicates whether this track has Error Resilience capabilities.
+	// If true, the player should attempt to decode all frames even if some are corrupted.
 	DecodeAll bool
-	// Whether or not this track as compression enabled.
+	// CompEnabled indicates whether this track has compression enabled.
 	CompEnabled bool
 
-	// Video information. Only valid if the track is a video track.
+	// Video contains video-specific information. Only valid if the track is a video track.
 	Video struct {
-		// The Stereo3D mode used, of any.
+		// StereoMode is the stereo 3D mode used, if any.
+		// This defines how the video should be displayed for 3D playback.
 		StereoMode uint8
-		// Display unit used for DisplayWidth and DisplayHeight.
+		// DisplayUnit is the unit used for DisplayWidth and DisplayHeight.
+		// This defines whether the display dimensions are in pixels, centimeters, or inches.
 		DisplayUnit uint8
-		// What type of resizing is needed for the aspect ratio:
+		// AspectRatioType defines what type of resizing is needed for the aspect ratio:
 		//     0 = free resizing
 		//     1 = keep aspect ratio
 		//     2 = fixed
 		AspectRatioType uint8
-		// The width in pixels.
+		// PixelWidth is the width of the video in pixels.
 		PixelWidth uint32
-		// The height in pixels.
+		// PixelHeight is the height of the video in pixels.
 		PixelHeight uint32
-		// The width to be displayed at.
+		// DisplayWidth is the width at which the video should be displayed.
+		// This may differ from PixelWidth if the video needs to be scaled.
 		DisplayWidth uint32
-		// The height to be displayed at.
+		// DisplayHeight is the height at which the video should be displayed.
+		// This may differ from PixelHeight if the video needs to be scaled.
 		DisplayHeight uint32
-		// How many pixels to crop from the left.
+		// CropL is the number of pixels to crop from the left side of the video.
 		CropL uint32
-		// How many pixels to crop from the top.
+		// CropT is the number of pixels to crop from the top of the video.
 		CropT uint32
-		// How many pixels to crop from the right.
+		// CropR is the number of pixels to crop from the right side of the video.
 		CropR uint32
-		// How many pixels to crop from the bottom.
+		// CropB is the number of pixels to crop from the bottom of the video.
 		CropB uint32
-		// The colouspace. Like biCompression from BITMAPINFOHEADER.
+		// ColourSpace is the colorspace of the video, similar to biCompression from BITMAPINFOHEADER.
 		ColourSpace uint32
-		// Gamma value to use for adjustment.
+		// GammaValue is the gamma value to use for color adjustment.
 		GammaValue float64
-		// Colour information.
+		// Colour contains detailed color information for the video.
 		Colour struct {
-			// Matrix coefficients. See: ISO/IEC 23091-4/ITU-T H.273.
+			// MatrixCoefficients defines the matrix coefficients used for the video.
+			// See: ISO/IEC 23091-4/ITU-T H.273 for standard values.
 			MatrixCoefficients uint32
-			// Bits per colour channel.
+			// BitsPerChannel is the number of bits per color channel.
 			BitsPerChannel uint32
-			// Base 2 logarithm of horizontal chroma subsampling.
+			// ChromaSubsamplingHorz is the base 2 logarithm of horizontal chroma subsampling.
 			ChromaSubsamplingHorz uint32
-			// Base 2 logarithm of vertical chroma subsampling.
+			// ChromaSubsamplingVert is the base 2 logarithm of vertical chroma subsampling.
 			ChromaSubsamplingVert uint32
-			// The amount of pixels to remove in the Cb channel for every pixel
+			// CbSubsamplingHorz is the amount of pixels to remove in the Cb channel for every pixel
 			// not removed horizontally. This is additive with ChromaSubsamplingHorz.
 			CbSubsamplingHorz uint32
-			// The amount of pixels to remove in the Cb channel for every pixel
-			// not removed vertically. This is additive with ChromaSubsamplingHorz.
+			// CbSubsamplingVert is the amount of pixels to remove in the Cb channel for every pixel
+			// not removed vertically. This is additive with ChromaSubsamplingVert.
 			CbSubsamplingVert uint32
-			// Horizontal hroma position:
+			// ChromaSitingHorz is the horizontal chroma position:
 			//     0 = unspecified,
 			//     1 = left collocated
 			//     2 = half
 			ChromaSitingHorz uint32
-			// Vertical hroma position:
+			// ChromaSitingVert is the vertical chroma position:
 			//     0 = unspecified
 			//     1 = left collocated
 			//     2 = half
 			ChromaSitingVert uint32
-			// Colour range:
+			// Range defines the color range:
 			//     0 = unspecified
 			//     1 = broadcast range (16-235)
 			//     2 = full range (0-255)
 			//     3 = defined by MatrixCoefficients / TransferCharacteristics
 			Range uint32
-			// Transfer characteristics. See: ISO/IEC 23091-4/ITU-T H.273.
+			// TransferCharacteristics defines the transfer characteristics of the video.
+			// See: ISO/IEC 23091-4/ITU-T H.273 for standard values.
 			TransferCharacteristics uint32
-			// Colour rimaries. See: ISO/IEC 23091-4/ITU-T H.273.
+			// Primaries defines the color primaries of the video.
+			// See: ISO/IEC 23091-4/ITU-T H.273 for standard values.
 			Primaries uint32
-			// Max content light level.
+			// MaxCLL is the maximum content light level in nits.
+			// This is used for HDR content to indicate the brightest point in the content.
 			MaxCLL uint32
-			// Max frame-average light level.
+			// MaxFALL is the maximum frame-average light level in nits.
+			// This is used for HDR content to indicate the average brightness of the brightest frame.
 			MaxFALL uint32
-			// Mastering metadata.
+			// MasteringMetadata contains mastering display metadata for HDR content.
 			MasteringMetadata struct {
-				PrimaryRChromaticityX   float32
-				PrimaryRChromaticityY   float32
-				PrimaryGChromaticityX   float32
-				PrimaryGChromaticityY   float32
-				PrimaryBChromaticityX   float32
-				PrimaryBChromaticityY   float32
+				// PrimaryRChromaticityX is the X chromaticity coordinate of the red primary.
+				PrimaryRChromaticityX float32
+				// PrimaryRChromaticityY is the Y chromaticity coordinate of the red primary.
+				PrimaryRChromaticityY float32
+				// PrimaryGChromaticityX is the X chromaticity coordinate of the green primary.
+				PrimaryGChromaticityX float32
+				// PrimaryGChromaticityY is the Y chromaticity coordinate of the green primary.
+				PrimaryGChromaticityY float32
+				// PrimaryBChromaticityX is the X chromaticity coordinate of the blue primary.
+				PrimaryBChromaticityX float32
+				// PrimaryBChromaticityY is the Y chromaticity coordinate of the blue primary.
+				PrimaryBChromaticityY float32
+				// WhitePointChromaticityX is the X chromaticity coordinate of the white point.
 				WhitePointChromaticityX float32
+				// WhitePointChromaticityY is the Y chromaticity coordinate of the white point.
 				WhitePointChromaticityY float32
-				LuminanceMax            float32
-				LuminanceMin            float32
+				// LuminanceMax is the maximum luminance of the display in nits.
+				LuminanceMax float32
+				// LuminanceMin is the minimum luminance of the display in nits.
+				LuminanceMin float32
 			}
 		}
-		// Whether or not the track is interlaced.
+		// Interlaced indicates whether the video is interlaced.
+		// If true, the video consists of interlaced fields rather than progressive frames.
 		Interlaced bool
 	}
-	// Audio information. Only valid if the track is an audiotrack.
+	// Audio contains audio-specific information. Only valid if the track is an audio track.
 	Audio struct {
-		// Sampling frequency.
+		// SamplingFreq is the sampling frequency of the audio in Hz.
 		SamplingFreq float64
-		// The samplign frequency to output during play back.
+		// OutputSamplingFreq is the sampling frequency to output during playback in Hz.
+		// This may differ from SamplingFreq if resampling is required.
 		OutputSamplingFreq float64
-		// Number of channels.
+		// Channels is the number of audio channels.
 		Channels uint8
-		// The bit depth.
+		// BitDepth is the bit depth of the audio samples.
 		BitDepth uint8
 	}
 
-	// Name of the track.
+	// Name is the human-readable name of the track.
+	// This can be displayed to users to identify the track.
 	Name string
-	// Language of the track.
+	// Language is the language code of the track.
+	// This follows the ISO 639-2 language codes (e.g., "eng" for English).
 	Language string
-	// The track's codec.
+	// CodecID is the identifier for the codec used by this track.
+	// This is a string that identifies the codec, such as "V_MPEG4/ISO/AVC" for H.264 video.
 	CodecID string
 }
 
-// SegmentInfo contains file-level (segment) information about a stream.
+// SegmentInfo contains file-level (segment) information about a Matroska stream.
+//
+// A SegmentInfo structure holds metadata about the entire Matroska file or segment.
+// This includes general information like title, duration, creation date, and
+// relationships to other files in a sequence.
 type SegmentInfo struct {
-	// The top-level UID
+	// UID is the top-level unique identifier for this segment.
+	// This is a 128-bit UUID that uniquely identifies this segment.
 	UID [16]byte
-	// The UID of any files which should be played back before
-	// this one.
+	// PrevUID is the UID of any files which should be played back before this one.
+	// This is used to create a sequence of related files.
 	PrevUID [16]byte
-	// The UID of any files which should be played back after
-	// this one.
+	// NextUID is the UID of any files which should be played back after this one.
+	// This is used to create a sequence of related files.
 	NextUID [16]byte
-	// The filename
+	// Filename is the filename of this segment.
+	// This is a human-readable name for the file.
 	Filename string
-	// The filename of any files which should be played back
-	// before this one.
+	// PrevFilename is the filename of any files which should be played back before this one.
+	// This corresponds to the file with UID equal to PrevUID.
 	PrevFilename string
-	// The filename of any files which should be played back
-	// after this one.
+	// NextFilename is the filename of any files which should be played back after this one.
+	// This corresponds to the file with UID equal to NextUID.
 	NextFilename string
-	// The title
+	// Title is the title of the segment.
+	// This is a human-readable title for the content.
 	Title string
-	// What program muxed this file
+	// MuxingApp is the name of the application that muxed this file.
+	// This is useful for debugging and compatibility purposes.
 	MuxingApp string
-	// What library muxed this file
+	// WritingApp is the name of the library that muxed this file.
+	// This is useful for debugging and compatibility purposes.
 	WritingApp string
-	// The timescale of any timecodes
+	// TimecodeScale is the timescale of any timecodes in the segment.
+	// This is used to convert timecodes to nanoseconds. The default is 1000000.
 	TimecodeScale uint64
-	// The file's duration. May be 0.
+	// Duration is the file's duration in nanoseconds. May be 0 if unknown.
 	Duration uint64
-	// The date the file was created on.
+	// DateUTC is the date the file was created on, in nanoseconds since the Unix epoch.
+	// This can be used to determine when the file was created.
 	DateUTC int64
-	// Whether or not DateUTC can be considered valid.
+	// DateUTCValid indicates whether or not DateUTC can be considered valid.
+	// If false, the DateUTC value should not be used.
 	DateUTCValid bool
 }
 
-// Attachment contains info about a matroska attachment.
+// Attachment contains information about a Matroska attachment.
+//
+// Matroska files can contain attached files, such as fonts, images, or other metadata.
+// The Attachment structure holds information about these attached files, including
+// their location, size, and metadata.
 type Attachment struct {
-	// Attachment's position within the stream.
+	// Position is the attachment's position within the stream.
+	// This is the byte offset where the attachment data begins.
 	Position uint64
-	// Attachment's length.
+	// Length is the attachment's length in bytes.
+	// This is the size of the attachment data.
 	Length uint64
-	// Attachment's UID.
+	// UID is the attachment's unique identifier.
+	// This allows the attachment to be referenced by other elements.
 	UID uint64
-	// Name of the attachment.
+	// Name is the name of the attachment.
+	// This is a human-readable name for the attached file.
 	Name string
-	// A description of the attachment.
+	// Description is a description of the attachment.
+	// This provides additional information about the attached file.
 	Description string
-	// The attachment's mime-type.
+	// MimeType is the attachment's MIME type.
+	// This identifies the type of the attached file, such as "font/ttf" or "image/jpeg".
 	MimeType string
 }
 
-// ChapterDisplay conatins display information for a given Chapter
+// ChapterDisplay contains display information for a given Chapter.
+//
+// A ChapterDisplay structure holds the human-readable information for a chapter,
+// including its name, language, and country association. This allows chapters
+// to be displayed in multiple languages and with country-specific variations.
 type ChapterDisplay struct {
-	// String. Usually chapter name.
+	// String is the display string for the chapter, usually the chapter name.
+	// This is the human-readable text that will be displayed to users.
 	String string
-	// What language a chapter is.
+	// Language is the language code for this chapter display.
+	// This follows the ISO 639-2 language codes (e.g., "eng" for English).
 	Language string
-	// The country this chapter is associated with (for when there may
-	// be language dialects that vary).
+	// Country is the country this chapter is associated with.
+	// This is used when there may be language dialects that vary by country.
 	Country string
 }
 
+// ChapterCommand represents a command associated with a chapter.
+//
+// Chapter commands are used to execute specific actions at certain times during
+// chapter playback. This can be used for interactive content or special effects.
 type ChapterCommand struct {
-	// The command time
+	// Time is the time when the command should be executed.
+	// This is relative to the start of the chapter.
 	Time uint32
-	// The command
+	// Command contains the actual command data.
+	// The format and meaning of this data depends on the chapter codec.
 	Command []byte
 }
 
+// ChapterProcess contains processing information for a chapter.
+//
+// Chapter processes are used to apply special processing to chapters,
+// such as codec-specific processing or command execution.
 type ChapterProcess struct {
-	// The CodecID of this process
+	// CodecID is the identifier for the codec used by this process.
+	// This determines how the process data should be interpreted.
 	CodecID uint32
-	// Any private data for this process
+	// CodecPrivate contains any private data for this process.
+	// This is codec-specific data that may be needed for processing.
 	CodecPrivate []byte
-	// All associated commands
+	// Commands contains all associated commands for this process.
+	// These commands will be executed as part of the chapter processing.
 	Commands []ChapterCommand
 }
 
 // Chapter contains all information about a Matroska chapter.
+//
+// A Chapter structure represents a chapter or section within a Matroska file.
+// Chapters can be nested to create a hierarchical structure, and can contain
+// display information, processing commands, and timing information.
 type Chapter struct {
-	// The chapter's UID.
+	// UID is the chapter's unique identifier.
+	// This allows chapters to be referenced by other elements.
 	UID uint64
-	// Start time for the chapter.
+	// Start is the start time for the chapter in nanoseconds.
+	// This is relative to the beginning of the segment.
 	Start uint64
-	// End time for the chapter.
+	// End is the end time for the chapter in nanoseconds.
+	// This is relative to the beginning of the segment.
 	End uint64
 
-	// Tracks this chapter pertains to.
+	// Tracks contains the list of track UIDs this chapter pertains to.
+	// If empty, the chapter applies to all tracks.
 	Tracks []uint64
-	// Display information for this chapter.
+	// Display contains display information for this chapter.
+	// This allows the chapter to be displayed in multiple languages.
 	Display []ChapterDisplay
-	// Any child chapters for this chapter.
+	// Children contains any child chapters for this chapter.
+	// This allows for a hierarchical chapter structure.
 	Children []*Chapter
-	// Set of processes for this chapter.
+	// Process contains the set of processes for this chapter.
+	// These processes can be used for special chapter handling.
 	Process []ChapterProcess
 
-	// The segment UID this chapter relates to.
+	// SegmentUID is the segment UID this chapter relates to.
+	// This allows chapters to reference specific segments.
 	SegmentUID [16]byte
 
-	// Whether or not this chpater is hidden.
+	// Hidden indicates whether this chapter is hidden.
+	// Hidden chapters are not displayed in chapter lists.
 	Hidden bool
-	// Whether or not this chapter is enabled.
+	// Enabled indicates whether this chapter is enabled.
+	// Disabled chapters are ignored during playback.
 	Enabled bool
 
-	// Whether or not this Edition is the default.
+	// Default indicates whether this Edition is the default.
+	// If true, this chapter edition should be used by default.
 	Default bool
-	// Whether or not this chapter is ordered.
+	// Ordered indicates whether this chapter is ordered.
+	// Ordered chapters must be played in a specific sequence.
 	Ordered bool
 }
 
-// Cue contains all information about a matroska cue.
+// Cue contains all information about a Matroska cue.
+//
+// Cues are indexing points in a Matroska file that allow for efficient seeking.
+// A Cue structure contains the timing and position information needed to locate
+// specific points in the media stream.
 type Cue struct {
-	// The cue's start time.
+	// Time is the cue's start time in nanoseconds.
+	// This is the timestamp of the cue point.
 	Time uint64
-	// The cue's duration.
+	// Duration is the cue's duration in nanoseconds.
+	// This may be 0 if the duration is unknown.
 	Duration uint64
-	// The cue's position in the stream.
+	// Position is the cue's position in the stream.
+	// This is the byte offset of the cluster containing the cue.
 	Position uint64
-	// The cue's position relative to the cluster.
+	// RelativePosition is the cue's position relative to the cluster.
+	// This is the byte offset within the cluster.
 	RelativePosition uint64
-	// The block number.
+	// Block is the block number within the cluster.
+	// This identifies the specific block containing the cue.
 	Block uint64
-	// The track which this cue covers.
+	// Track is the track which this cue covers.
+	// This identifies which track the cue point belongs to.
 	Track uint8
 }
 
-// Target contains a information about a tag's target.
+// Target contains information about a tag's target.
+//
+// A Target structure identifies what a Matroska tag applies to.
+// Tags can be applied to tracks, chapters, attachments, or editions.
 type Target struct {
-	// The target's UID.
+	// UID is the target's unique identifier.
+	// This identifies the specific element that the tag applies to.
 	UID uint64
-	// The target type. See constants for types.
+	// Type is the target type. See the tag target type constants.
+	// This determines what kind of element the tag applies to.
 	Type uint32
 }
 
 // SimpleTag contains a simple Matroska tag.
+//
+// A SimpleTag structure represents a single key-value metadata tag.
+// These tags can be used to store information like title, artist, album, etc.
 type SimpleTag struct {
-	// Tag name
+	// Name is the tag name.
+	// This is the key part of the key-value pair.
 	Name string
-	// Tag value
+	// Value is the tag value.
+	// This is the value part of the key-value pair.
 	Value string
-	// Tag language
+	// Language is the tag language.
+	// This follows the ISO 639-2 language codes (e.g., "eng" for English).
 	Language string
-	// Whether or not this tag is applied by default.
+	// Default indicates whether this tag is applied by default.
+	// If true, this tag should be used unless the user explicitly selects another language.
 	Default bool
 }
 
 // Tag contains all information relating to a Matroska tag.
+//
+// A Tag structure represents a collection of metadata tags that can be applied
+// to various targets within a Matroska file. Tags are used to store metadata
+// like titles, descriptions, and other information about the content.
 type Tag struct {
-	// A list of associated targets.
+	// Targets is a list of associated targets.
+	// This specifies what elements in the file the tags apply to.
 	Targets []Target
-	// A list of associated simple tags.
+	// SimpleTags is a list of associated simple tags.
+	// These are the actual key-value metadata pairs.
 	SimpleTags []SimpleTag
 }

@@ -1,3 +1,20 @@
+// Package main demonstrates how to use the Matroska/EBML library to extract tracks from Matroska files.
+//
+// This example application shows how to:
+//   - Parse Matroska files and extract track information
+//   - Process different types of tracks (video, audio, subtitles)
+//   - Convert video data from AVCC format to Annex B format
+//   - Format subtitle data into SRT format
+//   - Write extracted tracks to separate files
+//
+// The main function demonstrates a complete track extraction workflow, including:
+//   - Opening and parsing a Matroska file
+//   - Identifying and processing each track
+//   - Handling different codec formats appropriately
+//   - Comparing output with reference files for validation
+//
+// This example serves as a practical demonstration of the matroska-go library's capabilities
+// and can be used as a starting point for building more complex Matroska processing applications.
 package main
 
 import (
@@ -10,6 +27,27 @@ import (
 	"github.com/luispater/matroska-go"
 )
 
+// formatSRTEntry formats a subtitle packet into SRT (SubRip Text) format.
+//
+// SRT format has the following structure:
+//
+//	1
+//	00:00:01,000 --> 00:00:04,000
+//	Subtitle text here
+//
+// Parameters:
+//
+//	index - The sequence number of the subtitle entry
+//	packet - The Matroska packet containing subtitle data with timing information
+//
+// Returns:
+//
+//	A string containing the formatted SRT entry with proper timing and text
+//
+// The function handles:
+//   - Converting Matroska timestamps (in milliseconds) to SRT time format
+//   - Cleaning subtitle text by converting CRLF to LF
+//   - Ensuring empty subtitles are represented with a space character
 func formatSRTEntry(index int, packet *matroska.Packet) string {
 	// Matroska timestamps are already in milliseconds (with TimecodeScale=1000000)
 	startMs := packet.StartTime
@@ -27,6 +65,26 @@ func formatSRTEntry(index int, packet *matroska.Packet) string {
 	return fmt.Sprintf("%d\n%s --> %s\n%s\n\n", index, startTime, endTime, text)
 }
 
+// formatSRTTime converts milliseconds to SRT time format (HH:MM:SS,mmm).
+//
+// SRT time format uses hours:minutes:seconds,milliseconds with comma as separator
+// for milliseconds, unlike many other formats that use a period.
+//
+// Parameters:
+//
+//	ms - Time duration in milliseconds
+//
+// Returns:
+//
+//	A string formatted as "HH:MM:SS,mmm" where:
+//	  HH - Hours (zero-padded to 2 digits)
+//	  MM - Minutes (zero-padded to 2 digits)
+//	  SS - Seconds (zero-padded to 2 digits)
+//	  mmm - Milliseconds (zero-padded to 3 digits)
+//
+// Example:
+//
+//	formatSRTTime(3661123) returns "01:01:01,123"
 func formatSRTTime(ms uint64) string {
 	hours := ms / 3600000
 	ms %= 3600000
@@ -43,6 +101,29 @@ var firstAUDSeen = false
 var videoCodecPrivateWritten = false
 var videoCodecPrivate []byte
 
+// convertAVCCToAnnexB converts video data from AVCC format to Annex B format.
+//
+// AVCC format uses length-prefixed NAL units (4-byte big-endian length before each NAL unit),
+// while Annex B format uses start codes (0x00000001 or 0x000001) to separate NAL units.
+// This conversion is necessary for compatibility with many video players and tools.
+//
+// The function handles both H.264 and H.265 video formats, automatically detecting
+// the codec type and applying appropriate conversion rules:
+//   - H.264: Uses 4-byte start codes for all NAL units
+//   - H.265: Uses 4-byte start codes for VPS, SPS, PPS, and the first AUD;
+//     uses 3-byte start codes for other NAL units
+//
+// Parameters:
+//
+//	data - Video data in AVCC format with length-prefixed NAL units
+//
+// Returns:
+//
+//	Video data converted to Annex B format with appropriate start codes
+//
+// The function uses global state (firstAUDSeen) to track whether the first AUD
+// (Access Unit Delimiter) has been processed, which affects start code selection
+// for H.265 streams.
 func convertAVCCToAnnexB(data []byte) []byte {
 	var result []byte
 	pos := 0
@@ -115,6 +196,34 @@ func convertAVCCToAnnexB(data []byte) []byte {
 	return result
 }
 
+// convertAVCCConfigToAnnexB converts AVCC configuration data to Annex B format.
+//
+// AVCC configuration (also known as AVCDecoderConfigurationRecord) contains
+// codec initialization data including SPS (Sequence Parameter Set) and PPS
+// (Picture Parameter Set) NAL units. This function extracts these NAL units
+// and converts them from AVCC's length-prefixed format to Annex B's start code format.
+//
+// The AVCC configuration format:
+//   - Byte 0: Configuration version (always 1)
+//   - Byte 1: AVC profile indication
+//   - Byte 2: Profile compatibility
+//   - Byte 3: AVC level indication
+//   - Byte 4: NAL unit length size minus one (usually 3, meaning 4-byte lengths)
+//   - Byte 5: Number of SPS NAL units (lower 5 bits)
+//   - Following: SPS data (each with 2-byte length prefix)
+//   - Following: Number of PPS NAL units
+//   - Following: PPS data (each with 2-byte length prefix)
+//
+// Parameters:
+//
+//	config - AVCC configuration data containing SPS and PPS NAL units
+//
+// Returns:
+//
+//	SPS and PPS NAL units in Annex B format with 4-byte start codes (0x00000001)
+//
+// The function returns an empty byte slice if the configuration data is invalid
+// or too short to contain valid SPS/PPS information.
 func convertAVCCConfigToAnnexB(config []byte) []byte {
 	var result []byte
 
@@ -171,6 +280,28 @@ func convertAVCCConfigToAnnexB(config []byte) []byte {
 	return result
 }
 
+// main demonstrates a complete workflow for extracting tracks from a Matroska file.
+//
+// This function shows how to:
+//   - Open and parse a Matroska file
+//   - Extract file information and track details
+//   - Create output files for each track
+//   - Process packets based on track type (video, audio, subtitle)
+//   - Apply appropriate format conversions for different track types
+//   - Validate output by comparing with reference files
+//
+// The function processes three types of tracks:
+//   - Video tracks: Convert from AVCC to Annex B format, write codec private data
+//   - Audio tracks: Write raw data without conversion
+//   - Subtitle tracks: Convert to SRT format with proper timing
+//
+// Global variables are used to track state during processing:
+//   - firstAUDSeen: Tracks whether the first AUD has been processed for H.265
+//   - videoCodecPrivateWritten: Tracks whether video codec private data has been written
+//   - videoCodecPrivate: Stores the video codec private data for writing
+//
+// The function includes progress reporting and validation against reference files
+// to demonstrate the accuracy of the extraction process.
 func main() {
 	// Reset global state for new file
 	firstAUDSeen = false
