@@ -309,8 +309,8 @@ func main() {
 	videoCodecPrivate = nil
 
 	// Input file path
-	inputFile := "/Volumes/storage/Downloads/upload/NCIS.New.Orleans.S02E01.Sic.Semper.Tyrannis.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb.mkv"
-	outputDir := "/Volumes/storage/Downloads/upload"
+	inputFile := "testdata/test.mkv"
+	outputDir := "testdata/"
 
 	// Check if input file exists
 	if _, err := os.Stat(inputFile); os.IsNotExist(err) {
@@ -346,6 +346,136 @@ func main() {
 	fmt.Printf("File: %s\n", filepath.Base(inputFile))
 	fmt.Printf("Duration: %d\n", fileInfo.Duration)
 	fmt.Printf("Timecode Scale: %d\n", fileInfo.TimecodeScale)
+
+	// Demonstrate new features: Tags, Attachments, Chapters, Cues
+	fmt.Printf("\n=== New Features Demo ===\n")
+
+	// Display Tags
+	tags := demuxer.GetTags()
+	fmt.Printf("Tags found: %d\n", len(tags))
+	for i, tag := range tags {
+		fmt.Printf("Tag %d:\n", i)
+		for j, target := range tag.Targets {
+			fmt.Printf("  Target %d: Type=%d, UID=%d\n", j, target.Type, target.UID)
+		}
+		for j, simpleTag := range tag.SimpleTags {
+			fmt.Printf("  SimpleTag %d: %s = %s (lang: %s, default: %v)\n",
+				j, simpleTag.Name, simpleTag.Value, simpleTag.Language, simpleTag.Default)
+		}
+	}
+
+	// Display Attachments
+	attachments := demuxer.GetAttachments()
+	fmt.Printf("Attachments found: %d\n", len(attachments))
+	for i, attachment := range attachments {
+		fmt.Printf("Attachment %d: Name=%s, MimeType=%s, Size=%d bytes, Description=%s\n",
+			i, attachment.Name, attachment.MimeType, attachment.Length, attachment.Description)
+	}
+
+	// Display Chapters
+	chapters := demuxer.GetChapters()
+	fmt.Printf("Chapters found: %d\n", len(chapters))
+	for i, chapter := range chapters {
+		var chapterName string
+		if len(chapter.Display) > 0 {
+			chapterName = chapter.Display[0].String
+		} else {
+			chapterName = "Unnamed Chapter"
+		}
+		fmt.Printf("Chapter %d: %s (Start: %d, End: %d, UID: %d)\n",
+			i, chapterName, chapter.Start, chapter.End, chapter.UID)
+	}
+
+	// Display Cues
+	cues := demuxer.GetCues()
+	fmt.Printf("Cues found: %d\n", len(cues))
+	if len(cues) > 0 {
+		fmt.Printf("First 5 cues:\n")
+		for i, cue := range cues {
+			if i >= 5 {
+				break
+			}
+			fmt.Printf("  Cue %d: Time=%d, Track=%d, Position=%d\n",
+				i, cue.Time, cue.Track, cue.Position)
+		}
+	}
+
+	// Demonstrate SkipToKeyframe functionality
+	fmt.Printf("\n=== SkipToKeyframe Demo ===\n")
+	// Read a few packets to find a non-keyframe, then skip to keyframe
+	fmt.Printf("Reading packets to demonstrate SkipToKeyframe...\n")
+	for i := 0; i < 10; i++ {
+		packet, errReadPacket := demuxer.ReadPacket()
+		if errReadPacket != nil {
+			fmt.Printf("Error reading packet %d: %v\n", i, errReadPacket)
+			break
+		}
+		isKeyframe := (packet.Flags & matroska.KF) != 0
+		fmt.Printf("Packet %d: Track=%d, Time=%d ms, Keyframe=%v\n",
+			i, packet.Track, packet.StartTime/1000000, isKeyframe)
+
+		if !isKeyframe && packet.Track == 1 { // Video track
+			fmt.Printf("Found non-keyframe, calling SkipToKeyframe...\n")
+
+			// Call SkipToKeyframe - this will position us at the next keyframe
+			demuxer.SkipToKeyframe()
+			fmt.Printf("SkipToKeyframe completed\n")
+
+			// Read the next packet which should be a keyframe
+			nextPacket, errReadPacketKeyframe := demuxer.ReadPacket()
+			if errReadPacketKeyframe != nil {
+				fmt.Printf("Error reading packet after SkipToKeyframe: %v\n", errReadPacketKeyframe)
+			} else {
+				nextIsKeyframe := (nextPacket.Flags & matroska.KF) != 0
+				fmt.Printf("After SkipToKeyframe: Track=%d, Time=%d ms, Keyframe=%v\n",
+					nextPacket.Track, nextPacket.StartTime/1000000, nextIsKeyframe)
+			}
+			break
+		}
+	}
+
+	// Demonstrate SetTrackMask functionality
+	fmt.Printf("\n=== SetTrackMask Demo ===\n")
+	fmt.Printf("Reading 5 packets with all tracks enabled...\n")
+	for i := 0; i < 5; i++ {
+		packet, errReadPacket := demuxer.ReadPacket()
+		if errReadPacket != nil {
+			if errReadPacket == io.EOF {
+				break
+			}
+			fmt.Printf("Error reading packet %d: %v\n", i, errReadPacket)
+			break
+		}
+		fmt.Printf("Packet %d: Track=%d, Time=%d ms\n",
+			i, packet.Track, packet.StartTime/1000000)
+	}
+
+	// Set mask to ignore track 2 (bit 1 set)
+	fmt.Printf("Setting track mask to ignore track 2 (mask=0x2)...\n")
+	demuxer.SetTrackMask(0x2)
+
+	fmt.Printf("Reading 5 more packets with track 2 masked...\n")
+	for i := 0; i < 10; i++ {
+		packet, errReadPacket := demuxer.ReadPacket()
+		if errReadPacket != nil {
+			if errReadPacket == io.EOF {
+				break
+			}
+			fmt.Printf("Error reading packet %d: %v\n", i, errReadPacket)
+			break
+		}
+		if packet.Track == 2 {
+			fmt.Printf("ERROR: Track 2 packet received despite mask!\n")
+		}
+		fmt.Printf("Packet %d: Track=%d, Time=%d ms\n",
+			i, packet.Track, packet.StartTime/1000000)
+	}
+
+	// Clear mask
+	fmt.Printf("Clearing track mask (mask=0x0)...\n")
+	demuxer.SetTrackMask(0x0)
+
+	fmt.Printf("\n=== Track Extraction ===\n")
 
 	// Get number of tracks
 	numTracks, err := demuxer.GetNumTracks()

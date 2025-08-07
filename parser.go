@@ -160,6 +160,47 @@ func NewMatroskaParser(r io.ReadSeeker, avoidSeeks bool) (*MatroskaParser, error
 		return nil, fmt.Errorf("failed to parse segment: %w", err)
 	}
 
+	if !avoidSeeks && parser.cuesPos == 0 {
+		// Cues not found in initial scan, let's scan the whole segment more carefully
+		currentPos := parser.reader.Position()
+		if _, err := parser.reader.Seek(int64(parser.segmentPos), io.SeekStart); err != nil {
+			return nil, fmt.Errorf("failed to seek back to segment start: %w", err)
+		}
+
+		// Scan through the segment looking for cues without parsing everything
+		segmentEnd := parser.segmentPos + parser.segment.Size
+		for parser.reader.Position() < int64(segmentEnd) {
+			id, size, err := parser.reader.ReadElementHeader()
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				// If we can't read more elements, break gracefully
+				break
+			}
+
+			if id == IDCues {
+				parser.cuesPos = uint64(parser.reader.Position())
+				parser.cuesTopPos = uint64(parser.reader.Position()) + size
+				if err = parser.parseCues(size); err != nil {
+					// If cues parsing fails, continue without cues
+					break
+				}
+				break
+			} else {
+				// Skip this element
+				if _, err = parser.reader.Seek(int64(size), io.SeekCurrent); err != nil {
+					break
+				}
+			}
+		}
+
+		// Restore original position
+		if _, err := parser.reader.Seek(currentPos, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("failed to restore position: %w", err)
+		}
+	}
+
 	return parser, nil
 }
 
@@ -304,8 +345,14 @@ func (mp *MatroskaParser) parseSegmentChildren() error {
 			fallthrough
 		default:
 			// Skip unknown elements
-			if _, err = mp.reader.Seek(int64(size), io.SeekCurrent); err != nil {
-				return fmt.Errorf("failed to skip element: %w", err)
+			if mp.avoidSeeks {
+				if _, err = mp.reader.Skip(int64(size)); err != nil {
+					return fmt.Errorf("failed to skip element: %w", err)
+				}
+			} else {
+				if _, err = mp.reader.Seek(int64(size), io.SeekCurrent); err != nil {
+					return fmt.Errorf("failed to skip element: %w", err)
+				}
 			}
 		}
 	}
@@ -661,24 +708,108 @@ func (mp *MatroskaParser) parseAudioTrack(data []byte, track *TrackInfo) error {
 // to specific positions in the file. This information is particularly useful
 // for media players that need to quickly jump to different timecodes in the file.
 //
-// Currently, this method is not fully implemented and simply skips the Cues
-// element by seeking past it. The intended functionality is to parse the cue
-// points and store them for later use during seeking operations.
+// This method parses the cue points and stores them for later use during seeking operations.
 //
 // Parameters:
 //   - size: The size of the Cues element in bytes.
 //
 // Returns:
-//   - error: An error if the Cues element could not be skipped.
-//
-// Note: This method is currently a placeholder and will be implemented when
-// seeking functionality is needed.
+//   - error: An error if the Cues element could not be parsed.
 func (mp *MatroskaParser) parseCues(size uint64) error {
-	// Skip for now - will implement when needed for seeking
-	if _, err := mp.reader.Seek(int64(size), io.SeekCurrent); err != nil {
+	data := make([]byte, size)
+	if _, err := io.ReadFull(mp.reader.r, data); err != nil {
 		return err
 	}
+
+	reader := bytes.NewReader(data)
+	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
+
+	for childReader.pos < int64(size) {
+		element, err := childReader.ReadElement()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+
+		if element.ID == IDCuePoint {
+			cuePoints, err := mp.parseCuePoint(element.Data)
+			if err != nil {
+				return err
+			}
+			mp.cues = append(mp.cues, cuePoints...)
+		}
+	}
+
+	// Cues should be sorted by time for efficient searching
+	sort.Slice(mp.cues, func(i, j int) bool {
+		return mp.cues[i].Time < mp.cues[j].Time
+	})
+
 	return nil
+}
+
+func (mp *MatroskaParser) parseCuePoint(data []byte) ([]*Cue, error) {
+	reader := bytes.NewReader(data)
+	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
+
+	var cueTime uint64
+	var cues []*Cue
+
+	for childReader.pos < int64(len(data)) {
+		element, err := childReader.ReadElement()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+
+		switch element.ID {
+		case IDCueTime:
+			cueTime = element.ReadUInt()
+		case IDCueTrackPosition:
+			cue, err := mp.parseCueTrackPositions(element.Data)
+			if err != nil {
+				return nil, err
+			}
+			cue.Time = cueTime * mp.fileInfo.TimecodeScale
+			cues = append(cues, cue)
+		}
+	}
+	return cues, nil
+}
+
+func (mp *MatroskaParser) parseCueTrackPositions(data []byte) (*Cue, error) {
+	reader := bytes.NewReader(data)
+	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
+
+	cue := &Cue{}
+
+	for childReader.pos < int64(len(data)) {
+		element, err := childReader.ReadElement()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+
+		switch element.ID {
+		case IDCueTrack:
+			cue.Track = uint8(element.ReadUInt())
+		case IDCueClusterPos:
+			cue.Position = element.ReadUInt()
+		case IDCueRelativePos:
+			cue.RelativePosition = element.ReadUInt()
+		case IDCueBlockNum:
+			cue.Block = element.ReadUInt()
+		case IDCueDuration:
+			cue.Duration = element.ReadUInt() * mp.fileInfo.TimecodeScale
+		}
+	}
+	return cue, nil
 }
 
 // parseChapters parses chapter information from the Matroska file.
@@ -688,24 +819,141 @@ func (mp *MatroskaParser) parseCues(size uint64) error {
 // is typically used to provide navigation within the file, allowing users
 // to jump to specific sections or chapters.
 //
-// Currently, this method is not fully implemented and simply skips the Chapters
-// element by seeking past it. The intended functionality is to parse the chapter
-// information and store it for later use, enabling chapter-based navigation.
+// This method parses the chapter information and stores it for later use, enabling chapter-based navigation.
 //
 // Parameters:
 //   - size: The size of the Chapters element in bytes.
 //
 // Returns:
-//   - error: An error if the Chapters element could not be skipped.
-//
-// Note: This method is currently a placeholder and will be implemented when
-// chapter navigation functionality is needed.
+//   - error: An error if the Chapters element could not be parsed.
 func (mp *MatroskaParser) parseChapters(size uint64) error {
-	// Skip for now
-	if _, err := mp.reader.Seek(int64(size), io.SeekCurrent); err != nil {
+	data := make([]byte, size)
+	if _, err := io.ReadFull(mp.reader.r, data); err != nil {
 		return err
 	}
+
+	reader := bytes.NewReader(data)
+	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
+
+	for childReader.pos < int64(size) {
+		element, err := childReader.ReadElement()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+
+		if element.ID == IDEditionEntry {
+			chapters, err := mp.parseEditionEntry(element.Data)
+			if err != nil {
+				return err
+			}
+			mp.chapters = append(mp.chapters, chapters...)
+		}
+	}
+
 	return nil
+}
+
+func (mp *MatroskaParser) parseEditionEntry(data []byte) ([]*Chapter, error) {
+	reader := bytes.NewReader(data)
+	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
+
+	var chapters []*Chapter
+	for childReader.pos < int64(len(data)) {
+		element, err := childReader.ReadElement()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+
+		if element.ID == IDChapterAtom {
+			chapter, err := mp.parseChapterAtom(element.Data)
+			if err != nil {
+				return nil, err
+			}
+			chapters = append(chapters, chapter)
+		}
+	}
+	return chapters, nil
+}
+
+func (mp *MatroskaParser) parseChapterAtom(data []byte) (*Chapter, error) {
+	reader := bytes.NewReader(data)
+	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
+
+	chapter := &Chapter{
+		Enabled: true, // Default value
+	}
+
+	for childReader.pos < int64(len(data)) {
+		element, err := childReader.ReadElement()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+
+		switch element.ID {
+		case IDChapterUID:
+			chapter.UID = element.ReadUInt()
+		case IDChapterTimeStart:
+			chapter.Start = element.ReadUInt()
+		case IDChapterTimeEnd:
+			chapter.End = element.ReadUInt()
+		case IDChapterHidden:
+			chapter.Hidden = element.ReadUInt() != 0
+		case IDChapterEnabled:
+			chapter.Enabled = element.ReadUInt() != 0
+		case IDChapterDisplay:
+			display, err := mp.parseChapterDisplay(element.Data)
+			if err != nil {
+				return nil, err
+			}
+			chapter.Display = append(chapter.Display, display)
+		case IDChapterAtom:
+			childChapter, err := mp.parseChapterAtom(element.Data)
+			if err != nil {
+				return nil, err
+			}
+			chapter.Children = append(chapter.Children, childChapter)
+		}
+	}
+
+	return chapter, nil
+}
+
+func (mp *MatroskaParser) parseChapterDisplay(data []byte) (ChapterDisplay, error) {
+	reader := bytes.NewReader(data)
+	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
+
+	display := ChapterDisplay{
+		Language: "eng", // Default value
+	}
+
+	for childReader.pos < int64(len(data)) {
+		element, err := childReader.ReadElement()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return display, err
+		}
+
+		switch element.ID {
+		case IDChapterString:
+			display.String = element.ReadString()
+		case IDChapterLanguage:
+			display.Language = element.ReadString()
+		case IDChapterCountry:
+			display.Country = element.ReadString()
+		}
+	}
+	return display, nil
 }
 
 // parseTags parses tag information from the Matroska file.
@@ -715,25 +963,141 @@ func (mp *MatroskaParser) parseChapters(size uint64) error {
 // This information is similar to ID3 tags in MP3 files and can be used to
 // enrich the user experience by providing more context about the media content.
 //
-// Currently, this method is not fully implemented and simply skips the Tags
-// element by seeking past it. The intended functionality is to parse the tag
-// information and store it for later use, enabling applications to display
+// This method parses the tag information and stores it for later use, enabling applications to display
 // or utilize this metadata.
 //
 // Parameters:
 //   - size: The size of the Tags element in bytes.
 //
 // Returns:
-//   - error: An error if the Tags element could not be skipped.
-//
-// Note: This method is currently a placeholder and will be implemented when
-// metadata extraction functionality is needed.
+//   - error: An error if the Tags element could not be parsed.
 func (mp *MatroskaParser) parseTags(size uint64) error {
-	// Skip for now
-	if _, err := mp.reader.Seek(int64(size), io.SeekCurrent); err != nil {
+	data := make([]byte, size)
+	if _, err := io.ReadFull(mp.reader.r, data); err != nil {
 		return err
 	}
+
+	reader := bytes.NewReader(data)
+	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
+
+	for childReader.pos < int64(size) {
+		element, err := childReader.ReadElement()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+
+		if element.ID == IDTag {
+			tag, err := mp.parseTag(element.Data)
+			if err != nil {
+				return err
+			}
+			mp.tags = append(mp.tags, tag)
+		}
+	}
+
 	return nil
+}
+
+func (mp *MatroskaParser) parseTag(data []byte) (*Tag, error) {
+	reader := bytes.NewReader(data)
+	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
+
+	tag := &Tag{}
+
+	for childReader.pos < int64(len(data)) {
+		element, err := childReader.ReadElement()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+
+		switch element.ID {
+		case IDTargets:
+			target, err := mp.parseTarget(element.Data)
+			if err != nil {
+				return nil, err
+			}
+			tag.Targets = append(tag.Targets, target)
+		case IDSimpleTag:
+			simpleTag, err := mp.parseSimpleTag(element.Data)
+			if err != nil {
+				return nil, err
+			}
+			tag.SimpleTags = append(tag.SimpleTags, simpleTag)
+		}
+	}
+
+	return tag, nil
+}
+
+func (mp *MatroskaParser) parseTarget(data []byte) (Target, error) {
+	reader := bytes.NewReader(data)
+	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
+
+	target := Target{}
+
+	for childReader.pos < int64(len(data)) {
+		element, err := childReader.ReadElement()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return target, err
+		}
+
+		switch element.ID {
+		case IDTargetTypeValue:
+			target.Type = uint32(element.ReadUInt())
+		case IDTagTrackUID:
+			target.UID = element.ReadUInt()
+		case IDTagEditionUID:
+			target.UID = element.ReadUInt()
+		case IDTagChapterUID:
+			target.UID = element.ReadUInt()
+		case IDTagAttachmentUID:
+			target.UID = element.ReadUInt()
+		}
+	}
+
+	return target, nil
+}
+
+func (mp *MatroskaParser) parseSimpleTag(data []byte) (SimpleTag, error) {
+	reader := bytes.NewReader(data)
+	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
+
+	simpleTag := SimpleTag{
+		Language: "eng", // Default language
+		Default:  true,  // Default value
+	}
+
+	for childReader.pos < int64(len(data)) {
+		element, err := childReader.ReadElement()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return simpleTag, err
+		}
+
+		switch element.ID {
+		case IDTagName:
+			simpleTag.Name = element.ReadString()
+		case IDTagString:
+			simpleTag.Value = element.ReadString()
+		case IDTagLanguage:
+			simpleTag.Language = element.ReadString()
+		case IDTagDefault:
+			simpleTag.Default = element.ReadUInt() != 0
+		}
+	}
+
+	return simpleTag, nil
 }
 
 // parseAttachments parses attachment information from the Matroska file.
@@ -743,25 +1107,78 @@ func (mp *MatroskaParser) parseTags(size uint64) error {
 // embedded within the Matroska container and can be extracted for use by
 // media players or other applications.
 //
-// Currently, this method is not fully implemented and simply skips the Attachments
-// element by seeking past it. The intended functionality is to parse the attachment
-// information and store it for later use, enabling applications to extract
+// This method parses the attachment information and stores it for later use, enabling applications to extract
 // and utilize these attached files.
 //
 // Parameters:
 //   - size: The size of the Attachments element in bytes.
 //
 // Returns:
-//   - error: An error if the Attachments element could not be skipped.
-//
-// Note: This method is currently a placeholder and will be implemented when
-// attachment extraction functionality is needed.
+//   - error: An error if the Attachments element could not be parsed.
 func (mp *MatroskaParser) parseAttachments(size uint64) error {
-	// Skip for now
-	if _, err := mp.reader.Seek(int64(size), io.SeekCurrent); err != nil {
+	data := make([]byte, size)
+	if _, err := io.ReadFull(mp.reader.r, data); err != nil {
 		return err
 	}
+
+	reader := bytes.NewReader(data)
+	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
+
+	for childReader.pos < int64(size) {
+		element, err := childReader.ReadElement()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+
+		if element.ID == IDAttachedFile {
+			attachment, err := mp.parseAttachedFile(element.Data)
+			if err != nil {
+				return err
+			}
+			mp.attachments = append(mp.attachments, attachment)
+		}
+	}
+
 	return nil
+}
+
+func (mp *MatroskaParser) parseAttachedFile(data []byte) (*Attachment, error) {
+	reader := bytes.NewReader(data)
+	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
+
+	attachment := &Attachment{
+		Position: uint64(mp.reader.Position()),
+	}
+
+	for childReader.pos < int64(len(data)) {
+		element, err := childReader.ReadElement()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+
+		switch element.ID {
+		case IDFileDescription:
+			attachment.Description = element.ReadString()
+		case IDFileName:
+			attachment.Name = element.ReadString()
+		case IDFileMimeType:
+			attachment.MimeType = element.ReadString()
+		case IDFileUID:
+			attachment.UID = element.ReadUInt()
+		case IDFileData:
+			attachment.Length = uint64(len(element.Data))
+			// Note: We don't store the actual file data in memory for efficiency
+			// The Position field can be used to seek to the data when needed
+		}
+	}
+
+	return attachment, nil
 }
 
 // ReadPacket reads the next packet from the Matroska stream.
@@ -808,20 +1225,60 @@ func (mp *MatroskaParser) ReadPacket() (*Packet, error) {
 			return nil, err
 		}
 
+		var packet *Packet
+		var parseErr error
+
 		switch id {
 		case IDCluster:
-			// Parse cluster timestamp
-			if err = mp.parseClusterHeader(size); err != nil {
-				return nil, err
+			// Start of a new cluster, reset timestamp and parse its children
+			mp.clusterTimestamp = 0
+			clusterEnd := mp.reader.Position() + int64(size)
+			for mp.reader.Position() < clusterEnd {
+				childID, childSize, childErr := mp.reader.ReadElementHeader()
+				if childErr != nil {
+					return nil, childErr
+				}
+				switch childID {
+				case IDTimestamp:
+					data := make([]byte, childSize)
+					if _, err := io.ReadFull(mp.reader.r, data); err != nil {
+						return nil, err
+					}
+					element := &EBMLElement{ID: childID, Size: childSize, Data: data}
+					mp.clusterTimestamp = element.ReadUInt()
+				case IDSimpleBlock:
+					packet, parseErr := mp.parseSimpleBlock(childSize)
+					if parseErr != nil {
+						return nil, parseErr
+					}
+					if packet != nil {
+						if mp.currentTrackMask == 0 || (1<<(packet.Track-1))&mp.currentTrackMask == 0 {
+							return packet, nil
+						}
+					}
+				case IDBlockGroup:
+					packet, parseErr := mp.parseBlockGroup(childSize)
+					if parseErr != nil {
+						return nil, parseErr
+					}
+					if packet != nil {
+						if mp.currentTrackMask == 0 || (1<<(packet.Track-1))&mp.currentTrackMask == 0 {
+							return packet, nil
+						}
+					}
+				default:
+					if _, err = mp.reader.Seek(int64(childSize), io.SeekCurrent); err != nil {
+						return nil, err
+					}
+				}
 			}
-			// Continue to look for blocks in this cluster
 			continue
 
 		case IDSimpleBlock:
-			return mp.parseSimpleBlock(size)
+			packet, parseErr = mp.parseSimpleBlock(size)
 
 		case IDBlockGroup:
-			return mp.parseBlockGroup(size)
+			packet, parseErr = mp.parseBlockGroup(size)
 
 		case IDTimestamp:
 			// Update cluster timestamp
@@ -839,6 +1296,17 @@ func (mp *MatroskaParser) ReadPacket() (*Packet, error) {
 				return nil, err
 			}
 			continue
+		}
+
+		if parseErr != nil {
+			return nil, parseErr
+		}
+
+		if packet != nil {
+			if mp.currentTrackMask != 0 && (1<<(packet.Track-1))&mp.currentTrackMask != 0 {
+				continue
+			}
+			return packet, nil
 		}
 	}
 }
@@ -859,7 +1327,39 @@ func (mp *MatroskaParser) ReadPacket() (*Packet, error) {
 // Returns:
 //   - error: An error if the cluster header could not be parsed.
 func (mp *MatroskaParser) parseClusterHeader(size uint64) error {
-	// Reset cluster timestamp for new cluster
+	// We need to find the timestamp of the cluster.
+	data := make([]byte, size)
+	if _, err := io.ReadFull(mp.reader.r, data); err != nil {
+		return err
+	}
+
+	reader := bytes.NewReader(data)
+	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
+
+	for childReader.pos < int64(len(data)) {
+		element, err := childReader.ReadElement()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+
+		if element.ID == IDTimestamp {
+			mp.clusterTimestamp = element.ReadUInt()
+			// We found the timestamp, but we need to continue parsing the rest of the cluster
+			// so we have to seek back.
+			if _, err := mp.reader.Seek(int64(-size), io.SeekCurrent); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+
+	// Timestamp not found, which is weird, but let's seek back to where we were.
+	if _, err := mp.reader.Seek(int64(-size), io.SeekCurrent); err != nil {
+		return err
+	}
 	mp.clusterTimestamp = 0
 	return nil
 }
@@ -949,32 +1449,49 @@ func (mp *MatroskaParser) parseSimpleBlock(size uint64) (*Packet, error) {
 		case 0x06: // Xiph lacing
 			// Parse Xiph lacing sizes
 			if frameCount > 1 {
-				// Skip size bytes for now - this is complex
-				// For simplicity, estimate first frame size
-				totalSizeBytes := 0
+				frameSizes := make([]int, frameCount)
+				offset := 0
+
+				// Parse sizes for all frames except the last one
 				for i := 0; i < frameCount-1; i++ {
-					if totalSizeBytes >= len(frameData) {
-						break
+					size := 0
+					// Xiph lacing: sizes are encoded as a series of 255 bytes
+					// followed by the remainder
+					for offset < len(frameData) && frameData[offset] == 0xFF {
+						size += 255
+						offset++
 					}
-					// Simple heuristic: skip bytes that look like size info
-					for totalSizeBytes < len(frameData) && frameData[totalSizeBytes] == 0xFF {
-						totalSizeBytes++
+					if offset < len(frameData) {
+						size += int(frameData[offset])
+						offset++
 					}
-					if totalSizeBytes < len(frameData) {
-						totalSizeBytes++
-					}
+					frameSizes[i] = size
 				}
-				if totalSizeBytes < len(frameData) {
-					frameData = frameData[totalSizeBytes:]
+
+				// Last frame size is the remainder
+				totalPrevFrames := 0
+				for i := 0; i < frameCount-1; i++ {
+					totalPrevFrames += frameSizes[i]
+				}
+				frameSizes[frameCount-1] = len(frameData) - offset - totalPrevFrames
+
+				// Extract the first frame (for simplicity, just return the first frame)
+				// In a full implementation, you'd want to return all frames
+				if frameSizes[0] > 0 && offset+frameSizes[0] <= len(frameData) {
+					frameData = frameData[offset : offset+frameSizes[0]]
+				} else {
+					// If parsing failed, take remaining data after size headers
+					frameData = frameData[offset:]
 				}
 			}
 		}
 	}
 
+	scaledTime := (mp.clusterTimestamp + uint64(int64(timestamp))) * mp.fileInfo.TimecodeScale
 	packet := &Packet{
 		Track:     uint8(trackNum),
-		StartTime: mp.clusterTimestamp + uint64(timestamp),
-		EndTime:   mp.clusterTimestamp + uint64(timestamp), // Will be updated if duration is known
+		StartTime: scaledTime,
+		EndTime:   scaledTime, // Will be updated if duration is known
 		FilePos:   uint64(mp.reader.Position()) - size,
 		Data:      frameData,
 		Flags:     uint32(flags),
@@ -1047,10 +1564,11 @@ func (mp *MatroskaParser) parseBlockGroup(size uint64) (*Packet, error) {
 			timestamp := int16(blockData[trackBytes])<<8 | int16(blockData[trackBytes+1])
 			frameData := blockData[trackBytes+3:] // Skip flags byte
 
+			scaledTime := (mp.clusterTimestamp + uint64(int64(timestamp))) * mp.fileInfo.TimecodeScale
 			packet = &Packet{
 				Track:     uint8(trackNum),
-				StartTime: mp.clusterTimestamp + uint64(timestamp),
-				EndTime:   mp.clusterTimestamp + uint64(timestamp),
+				StartTime: scaledTime,
+				EndTime:   scaledTime,
 				FilePos:   uint64(mp.reader.Position()) - size,
 				Data:      frameData,
 				Flags:     KF, // Block groups are typically keyframes
@@ -1062,7 +1580,7 @@ func (mp *MatroskaParser) parseBlockGroup(size uint64) (*Packet, error) {
 	}
 
 	if packet != nil && duration > 0 {
-		packet.EndTime = packet.StartTime + duration
+		packet.EndTime = packet.StartTime + (duration * mp.fileInfo.TimecodeScale)
 	}
 
 	return packet, nil
@@ -1181,4 +1699,74 @@ func (mp *MatroskaParser) GetCuesPos() uint64 {
 // GetCuesTopPos returns the cues top position
 func (mp *MatroskaParser) GetCuesTopPos() uint64 {
 	return mp.cuesTopPos
+}
+
+func (mp *MatroskaParser) Seek(timecode uint64, flags uint32) error {
+	if mp.avoidSeeks {
+		return fmt.Errorf("seeking not supported in streaming mode")
+	}
+
+	if len(mp.cues) == 0 {
+		return fmt.Errorf("no cues available for seeking")
+	}
+
+	// Find the right cue point. Cues are sorted by time.
+	// We want to find the last cue point with time <= timecode.
+	i := sort.Search(len(mp.cues), func(i int) bool {
+		return mp.cues[i].Time >= timecode
+	})
+
+	if i > 0 && (i == len(mp.cues) || mp.cues[i].Time > timecode) {
+		// sort.Search finds the first element >= timecode.
+		// We want the one before it, which is <= timecode for a keyframe seek.
+		i--
+	}
+
+	if i >= len(mp.cues) {
+		i = len(mp.cues) - 1
+	}
+
+	// We have a cue point, now seek to the cluster position.
+	cue := mp.cues[i]
+	if _, err := mp.reader.Seek(int64(mp.segmentPos+cue.Position), io.SeekStart); err != nil {
+		return fmt.Errorf("failed to seek to cue position: %w", err)
+	}
+
+	// Reset cluster parsing state so ReadPacket will look for a new cluster
+	mp.clusterTimestamp = 0
+	return nil
+}
+
+func (mp *MatroskaParser) SkipToKeyframe() {
+	// If we can't seek, we can't really skip efficiently
+	if mp.avoidSeeks {
+		return
+	}
+
+	// Store current position in case we need to restore it
+	currentPos := mp.reader.Position()
+
+	for {
+		packet, err := mp.ReadPacket()
+		if err != nil {
+			// If we hit an error, restore position and return
+			_, _ = mp.reader.Seek(currentPos, io.SeekStart)
+			return
+		}
+
+		// Check if this is a keyframe and the track is not masked
+		isKeyframe := (packet.Flags & KF) != 0
+		isTrackEnabled := mp.currentTrackMask == 0 || (1<<(packet.Track-1))&mp.currentTrackMask == 0
+
+		if isKeyframe && isTrackEnabled {
+			// Don't seek back - we've already consumed this packet
+			// The next ReadPacket call will read the next packet naturally
+			return
+		}
+	}
+}
+
+func (mp *MatroskaParser) SetTrackMask(mask uint64) {
+	mp.currentTrackMask = mask
+	// Here we could discard queued packets if we had a queue
 }

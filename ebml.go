@@ -115,18 +115,65 @@ const (
 	IDBlock       = 0xA1       // A block containing raw data
 
 	// Cues elements
-	IDCues     = 0x1C53BB6B // A top-level element containing all cue points
-	IDCuePoint = 0xBB       // A single cue point pointing to a specific timestamp
-	IDCueTime  = 0xB3       // The timestamp of the cue point
+	IDCues             = 0x1C53BB6B // A top-level element containing all cue points
+	IDCuePoint         = 0xBB       // A single cue point pointing to a specific timestamp
+	IDCueTime          = 0xB3       // The timestamp of the cue point
+	IDCueTrackPosition = 0xB7       // Contains positions for a single track.
+	IDCueTrack         = 0xF7       // The track for this cue point.
+	IDCueClusterPos    = 0xF1       // The position of the Cluster containing the referenced Block.
+	IDCueRelativePos   = 0xF0       // The relative position of the Block within the Cluster.
+	IDCueBlockNum      = 0x5378     // The Block number of the referenced Block.
+	IDCueDuration      = 0x9B       // The duration of the block.
 
 	// Chapters elements
-	IDChapters = 0x1043A770 // A top-level element containing all chapter entries
+	IDChapters                 = 0x1043A770 // A top-level element containing all chapter entries
+	IDEditionEntry             = 0x45B9
+	IDEditionUID               = 0x45BC
+	IDEditionFlagHidden        = 0x45BD
+	IDEditionFlagDefault       = 0x45DB
+	IDEditionFlagOrdered       = 0x45DD
+	IDChapterAtom              = 0xB6
+	IDChapterUID               = 0x73C4
+	IDChapterStringUID         = 0x5654
+	IDChapterTimeStart         = 0x91
+	IDChapterTimeEnd           = 0x92
+	IDChapterHidden            = 0x98
+	IDChapterEnabled           = 0x4598
+	IDChapterSegmentUID        = 0x6E67
+	IDChapterSegmentEditionUID = 0x6EBC
+	IDChapterPhysicalEquiv     = 0x63C3
+	IDChapterTrack             = 0x8F
+	IDChapterTrackUID          = 0x89
+	IDChapterDisplay           = 0x80
+	IDChapterString            = 0x85
+	IDChapterLanguage          = 0x437C
+	IDChapterCountry           = 0x437E
 
 	// Tags elements
-	IDTags = 0x1254C367 // A top-level element containing all tags
+	IDTags             = 0x1254C367 // A top-level element containing all tags
+	IDTag              = 0x7373     // A single tag
+	IDTargets          = 0x63C0     // Specifies which other elements the metadata represented by the Tag applies to
+	IDTargetType       = 0x63CA     // An informational string that can be used to display the logical level of the target
+	IDTargetTypeValue  = 0x68CA     // A number to indicate the logical level of the target
+	IDTagTrackUID      = 0x63C5     // A unique ID to identify the Track(s) the tags belong to
+	IDTagEditionUID    = 0x63C9     // A unique ID to identify the EditionEntry(s) the tags belong to
+	IDTagChapterUID    = 0x63C4     // A unique ID to identify the Chapter(s) the tags belong to
+	IDTagAttachmentUID = 0x63C6     // A unique ID to identify the Attachment(s) the tags belong to
+	IDSimpleTag        = 0x67C8     // Contains general information about the target
+	IDTagName          = 0x45A3     // The name of the Tag that is going to be stored
+	IDTagString        = 0x4487     // The value of the Tag
+	IDTagLanguage      = 0x447A     // Specifies the language of the tag specified
+	IDTagDefault       = 0x4484     // Indication to know if this is the default/original language to use for the given tag
+	IDTagBinary        = 0x4485     // The values of the Tag if it is binary
 
 	// Attachments elements
-	IDAttachments = 0x1941A469 // A top-level element containing all attached files
+	IDAttachments     = 0x1941A469 // A top-level element containing all attached files
+	IDAttachedFile    = 0x61A7     // An attached file
+	IDFileDescription = 0x467E     // A human-friendly name for the attached file
+	IDFileName        = 0x466E     // Filename of the attached file
+	IDFileMimeType    = 0x4660     // MIME type of the file
+	IDFileData        = 0x465C     // The data of the file
+	IDFileUID         = 0x46AE     // Unique ID representing the file
 )
 
 // EBMLElement represents an EBML element with its ID, size, and data.
@@ -319,12 +366,20 @@ func (er *EBMLReader) ReadElement() (*EBMLElement, error) {
 	// Read element ID (keep length marker for IDs)
 	id, err := er.ReadVIntID()
 	if err != nil {
+		// Don't wrap EOF errors to preserve them for proper handling
+		if err == io.EOF {
+			return nil, err
+		}
 		return nil, fmt.Errorf("failed to read element ID: %w", err)
 	}
 
 	// Read element size (remove length marker for sizes)
 	size, err := er.ReadVInt()
 	if err != nil {
+		// Don't wrap EOF errors to preserve them for proper handling
+		if err == io.EOF {
+			return nil, err
+		}
 		return nil, fmt.Errorf("failed to read element size: %w", err)
 	}
 
@@ -513,6 +568,13 @@ func (er *EBMLReader) SkipElement(element *EBMLElement) error {
 	return nil
 }
 
+// Skip reads and discards the next n bytes from the underlying reader.
+func (er *EBMLReader) Skip(n int64) (int64, error) {
+	total, err := io.CopyN(io.Discard, er.r, n)
+	er.pos += total
+	return total, err
+}
+
 // ReadElementHeader reads only the element ID and size from the stream, without reading the actual data.
 //
 // This method is useful when you only need to inspect the type and size of an element
@@ -526,12 +588,20 @@ func (er *EBMLReader) ReadElementHeader() (uint32, uint64, error) {
 	// Read element ID (keep length marker for IDs)
 	id, err := er.ReadVIntID()
 	if err != nil {
+		// Don't wrap EOF errors to preserve them for proper handling
+		if err == io.EOF {
+			return 0, 0, err
+		}
 		return 0, 0, fmt.Errorf("failed to read element ID: %w", err)
 	}
 
 	// Read element size (remove length marker for sizes)
 	size, err := er.ReadVInt()
 	if err != nil {
+		// Don't wrap EOF errors to preserve them for proper handling
+		if err == io.EOF {
+			return 0, 0, err
+		}
 		return 0, 0, fmt.Errorf("failed to read element size: %w", err)
 	}
 

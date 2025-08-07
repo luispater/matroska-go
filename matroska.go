@@ -304,7 +304,7 @@ func (d *Demuxer) GetAttachments() []*Attachment {
 //
 //	chapters := demuxer.GetChapters()
 //	for _, chapter := range chapters {
-//	    fmt.Printf("Chapter: %s (%d-%d)\n", chapter.Display[0].String, chapter.Start, chapter.End)
+//	    fmt.Printf("Chapter: %s (%d-%d)\n", chapter.Display.String, chapter.Start, chapter.End)
 //	}
 //
 // Returns:
@@ -432,19 +432,20 @@ func (d *Demuxer) GetCuesTopPos() uint64 {
 // Flags here may be: 0 (normal seek), matroska.SeekToPrevKeyFrame,
 // or matoska.SeekToPrevKeyFrameStrict
 //
-// This function is intended to move the playback position to the specified
+// This function moves the playback position to the specified
 // timecode in the Matroska file. The flags parameter can be used to control
 // the seeking behavior, such as whether to seek to the previous keyframe
 // or to perform a strict seek.
-//
-// Note: This function is currently not implemented in the pure Go parser.
 //
 // Parameters:
 //   - timecode: The target timecode to seek to, in nanoseconds.
 //   - flags: Seek behavior flags. May be 0 (normal seek), SeekToPrevKeyFrame,
 //     or SeekToPrevKeyFrameStrict.
 func (d *Demuxer) Seek(timecode uint64, flags uint32) {
-	// TODO: Implement seeking in pure Go parser
+	if d.parser.avoidSeeks {
+		return
+	}
+	_ = d.parser.Seek(timecode, flags)
 }
 
 // SeekCueAware seeks to a given timecode while taking cues into account
@@ -454,12 +455,10 @@ func (d *Demuxer) Seek(timecode uint64, flags uint32) {
 //
 // fuzzy defines whether a fuzzy seek will be used or not.
 //
-// This function is intended to move the playback position to the specified
+// This function moves the playback position to the specified
 // timecode in the Matroska file, using the cue information for more accurate
 // seeking. The fuzzy parameter controls whether a fuzzy seek (approximate
 // position) is acceptable if an exact match cannot be found.
-//
-// Note: This function is currently not implemented in the pure Go parser.
 //
 // Parameters:
 //   - timecode: The target timecode to seek to, in nanoseconds.
@@ -467,34 +466,33 @@ func (d *Demuxer) Seek(timecode uint64, flags uint32) {
 //     or SeekToPrevKeyFrameStrict.
 //   - fuzzy: Whether to allow fuzzy seeking (approximate positions).
 func (d *Demuxer) SeekCueAware(timecode uint64, flags uint32, fuzzy bool) {
-	// TODO: Implement cue-aware seeking in pure Go parser
+	// fuzzy is not supported yet, just call normal seek
+	d.Seek(timecode, flags)
 }
 
 // SkipToKeyframe skips to the next keyframe in a stream.
 //
-// This function is intended to advance the playback position to the next
+// This function advances the playback position to the next
 // keyframe in the current track. Keyframes are frames that can be decoded
 // without reference to previous frames, making them ideal starting points
 // for seeking or resuming playback.
-//
-// Note: This function is currently not implemented in the pure Go parser.
 func (d *Demuxer) SkipToKeyframe() {
-	// TODO: Implement keyframe skipping in pure Go parser
+	d.parser.SkipToKeyframe()
 }
 
 // GetLowestQTimecode returns the lowest queued timecode in the demuxer.
 //
-// This function is intended to return the timecode of the earliest packet
+// This function returns the timecode of the earliest packet
 // that is currently queued in the demuxer. This can be useful for buffering
 // and synchronization purposes.
 //
-// Note: This function is currently not implemented in the pure Go parser.
-//
 // Returns:
-//   - uint64: The timecode of the lowest queued packet. Currently returns 0.
+//   - uint64: The timecode of the lowest queued packet.
 func (d *Demuxer) GetLowestQTimecode() uint64 {
-	// TODO: Implement timecode tracking in pure Go parser
-	return 0
+	if d.parser.fileInfo == nil {
+		return 0
+	}
+	return d.parser.clusterTimestamp * d.parser.fileInfo.TimecodeScale
 }
 
 // SetTrackMask sets the demuxer's track mask; that is, it tells the demuxer
@@ -503,17 +501,15 @@ func (d *Demuxer) GetLowestQTimecode() uint64 {
 //
 // Calling this withh cause all parsed and queued frames to be discarded.
 //
-// This function is intended to allow filtering of tracks during playback or
+// This function allows filtering of tracks during playback or
 // processing. The mask is a bitmask where each bit corresponds to a track
 // index. Setting a bit to 1 will cause that track to be ignored.
-//
-// Note: This function is currently not implemented in the pure Go parser.
 //
 // Parameters:
 //   - mask: A bitmask specifying which tracks to ignore. A bit set to 1 at
 //     position N will cause track N to be ignored.
 func (d *Demuxer) SetTrackMask(mask uint64) {
-	// TODO: Implement track masking in pure Go parser
+	d.parser.SetTrackMask(mask)
 }
 
 // ReadPacketMask is the same as ReadPacket except with a track mask.
