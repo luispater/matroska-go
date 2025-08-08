@@ -308,8 +308,13 @@ func main() {
 	videoCodecPrivateWritten = false
 	videoCodecPrivate = nil
 
+	if len(os.Args) < 2 {
+		fmt.Printf("Usage: %s <mkv-file>\n", os.Args)
+		return
+	}
+
 	// Input file path
-	inputFile := "testdata/test.mkv"
+	inputFile := os.Args[1]
 	outputDir := "testdata/"
 
 	// Check if input file exists

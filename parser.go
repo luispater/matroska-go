@@ -301,7 +301,12 @@ func (mp *MatroskaParser) parseSegmentChildren() error {
 		id, size, err := mp.reader.ReadElementHeader()
 		if err != nil {
 			if err == io.EOF {
-				break
+				// If the segment uses unknown size (streaming), EOF is a natural terminator.
+				// Otherwise, hitting EOF before the declared end means the segment is truncated.
+				if mp.segment != nil && mp.segment.Size == (1<<(7*8))-1 {
+					break
+				}
+				return fmt.Errorf("failed to read element header: %w", io.ErrUnexpectedEOF)
 			}
 			return fmt.Errorf("failed to read element header: %w", err)
 		}
@@ -388,9 +393,11 @@ func (mp *MatroskaParser) parseSegmentChildren() error {
 //   - error: An error if the SegmentInfo element could not be read or parsed.
 func (mp *MatroskaParser) parseSegmentInfo(size uint64) error {
 	data := make([]byte, size)
-	if _, err := io.ReadFull(mp.reader.r, data); err != nil {
+	n, err := io.ReadFull(mp.reader.r, data)
+	if err != nil {
 		return err
 	}
+	mp.reader.pos += int64(n)
 
 	mp.fileInfo = &SegmentInfo{
 		TimecodeScale: 1000000, // Default timecode scale
@@ -400,12 +407,12 @@ func (mp *MatroskaParser) parseSegmentInfo(size uint64) error {
 	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
 
 	for childReader.pos < int64(size) {
-		element, err := childReader.ReadElement()
-		if err != nil {
-			if err == io.EOF {
+		element, errReadElement := childReader.ReadElement()
+		if errReadElement != nil {
+			if errReadElement == io.EOF {
 				break
 			}
-			return err
+			return errReadElement
 		}
 
 		switch element.ID {
@@ -468,20 +475,22 @@ func (mp *MatroskaParser) parseSegmentInfo(size uint64) error {
 //   - error: An error if the Tracks element could not be read or parsed.
 func (mp *MatroskaParser) parseTracks(size uint64) error {
 	data := make([]byte, size)
-	if _, err := io.ReadFull(mp.reader.r, data); err != nil {
+	n, err := io.ReadFull(mp.reader.r, data)
+	if err != nil {
 		return err
 	}
+	mp.reader.pos += int64(n)
 
 	reader := bytes.NewReader(data)
 	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
 
 	for childReader.pos < int64(size) {
-		element, err := childReader.ReadElement()
-		if err != nil {
-			if err == io.EOF {
+		element, errReadElement := childReader.ReadElement()
+		if errReadElement != nil {
+			if errReadElement == io.EOF {
 				break
 			}
-			return err
+			return errReadElement
 		}
 
 		if element.ID == IDTrackEntry {
@@ -717,26 +726,28 @@ func (mp *MatroskaParser) parseAudioTrack(data []byte, track *TrackInfo) error {
 //   - error: An error if the Cues element could not be parsed.
 func (mp *MatroskaParser) parseCues(size uint64) error {
 	data := make([]byte, size)
-	if _, err := io.ReadFull(mp.reader.r, data); err != nil {
+	n, err := io.ReadFull(mp.reader.r, data)
+	if err != nil {
 		return err
 	}
+	mp.reader.pos += int64(n)
 
 	reader := bytes.NewReader(data)
 	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
 
 	for childReader.pos < int64(size) {
-		element, err := childReader.ReadElement()
-		if err != nil {
-			if err == io.EOF {
+		element, errReadElement := childReader.ReadElement()
+		if errReadElement != nil {
+			if errReadElement == io.EOF {
 				break
 			}
-			return err
+			return errReadElement
 		}
 
 		if element.ID == IDCuePoint {
-			cuePoints, err := mp.parseCuePoint(element.Data)
-			if err != nil {
-				return err
+			cuePoints, errParseCuePoint := mp.parseCuePoint(element.Data)
+			if errParseCuePoint != nil {
+				return errParseCuePoint
 			}
 			mp.cues = append(mp.cues, cuePoints...)
 		}
@@ -770,9 +781,9 @@ func (mp *MatroskaParser) parseCuePoint(data []byte) ([]*Cue, error) {
 		case IDCueTime:
 			cueTime = element.ReadUInt()
 		case IDCueTrackPosition:
-			cue, err := mp.parseCueTrackPositions(element.Data)
-			if err != nil {
-				return nil, err
+			cue, errParseCueTrackPositions := mp.parseCueTrackPositions(element.Data)
+			if errParseCueTrackPositions != nil {
+				return nil, errParseCueTrackPositions
 			}
 			cue.Time = cueTime * mp.fileInfo.TimecodeScale
 			cues = append(cues, cue)
@@ -828,26 +839,28 @@ func (mp *MatroskaParser) parseCueTrackPositions(data []byte) (*Cue, error) {
 //   - error: An error if the Chapters element could not be parsed.
 func (mp *MatroskaParser) parseChapters(size uint64) error {
 	data := make([]byte, size)
-	if _, err := io.ReadFull(mp.reader.r, data); err != nil {
+	n, err := io.ReadFull(mp.reader.r, data)
+	if err != nil {
 		return err
 	}
+	mp.reader.pos += int64(n)
 
 	reader := bytes.NewReader(data)
 	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
 
 	for childReader.pos < int64(size) {
-		element, err := childReader.ReadElement()
-		if err != nil {
-			if err == io.EOF {
+		element, errReadElement := childReader.ReadElement()
+		if errReadElement != nil {
+			if errReadElement == io.EOF {
 				break
 			}
-			return err
+			return errReadElement
 		}
 
 		if element.ID == IDEditionEntry {
-			chapters, err := mp.parseEditionEntry(element.Data)
-			if err != nil {
-				return err
+			chapters, errParseEditionEntry := mp.parseEditionEntry(element.Data)
+			if errParseEditionEntry != nil {
+				return errParseEditionEntry
 			}
 			mp.chapters = append(mp.chapters, chapters...)
 		}
@@ -871,9 +884,9 @@ func (mp *MatroskaParser) parseEditionEntry(data []byte) ([]*Chapter, error) {
 		}
 
 		if element.ID == IDChapterAtom {
-			chapter, err := mp.parseChapterAtom(element.Data)
-			if err != nil {
-				return nil, err
+			chapter, errParseChapterAtom := mp.parseChapterAtom(element.Data)
+			if errParseChapterAtom != nil {
+				return nil, errParseChapterAtom
 			}
 			chapters = append(chapters, chapter)
 		}
@@ -910,15 +923,15 @@ func (mp *MatroskaParser) parseChapterAtom(data []byte) (*Chapter, error) {
 		case IDChapterEnabled:
 			chapter.Enabled = element.ReadUInt() != 0
 		case IDChapterDisplay:
-			display, err := mp.parseChapterDisplay(element.Data)
-			if err != nil {
-				return nil, err
+			display, errParseChapterDisplay := mp.parseChapterDisplay(element.Data)
+			if errParseChapterDisplay != nil {
+				return nil, errParseChapterDisplay
 			}
 			chapter.Display = append(chapter.Display, display)
 		case IDChapterAtom:
-			childChapter, err := mp.parseChapterAtom(element.Data)
-			if err != nil {
-				return nil, err
+			childChapter, errParseChapterAtom := mp.parseChapterAtom(element.Data)
+			if errParseChapterAtom != nil {
+				return nil, errParseChapterAtom
 			}
 			chapter.Children = append(chapter.Children, childChapter)
 		}
@@ -973,26 +986,28 @@ func (mp *MatroskaParser) parseChapterDisplay(data []byte) (ChapterDisplay, erro
 //   - error: An error if the Tags element could not be parsed.
 func (mp *MatroskaParser) parseTags(size uint64) error {
 	data := make([]byte, size)
-	if _, err := io.ReadFull(mp.reader.r, data); err != nil {
+	n, err := io.ReadFull(mp.reader.r, data)
+	if err != nil {
 		return err
 	}
+	mp.reader.pos += int64(n)
 
 	reader := bytes.NewReader(data)
 	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
 
 	for childReader.pos < int64(size) {
-		element, err := childReader.ReadElement()
-		if err != nil {
-			if err == io.EOF {
+		element, errReadElement := childReader.ReadElement()
+		if errReadElement != nil {
+			if errReadElement == io.EOF {
 				break
 			}
-			return err
+			return errReadElement
 		}
 
 		if element.ID == IDTag {
-			tag, err := mp.parseTag(element.Data)
-			if err != nil {
-				return err
+			tag, errParseTag := mp.parseTag(element.Data)
+			if errParseTag != nil {
+				return errParseTag
 			}
 			mp.tags = append(mp.tags, tag)
 		}
@@ -1018,15 +1033,15 @@ func (mp *MatroskaParser) parseTag(data []byte) (*Tag, error) {
 
 		switch element.ID {
 		case IDTargets:
-			target, err := mp.parseTarget(element.Data)
-			if err != nil {
-				return nil, err
+			target, errParseTarget := mp.parseTarget(element.Data)
+			if errParseTarget != nil {
+				return nil, errParseTarget
 			}
 			tag.Targets = append(tag.Targets, target)
 		case IDSimpleTag:
-			simpleTag, err := mp.parseSimpleTag(element.Data)
-			if err != nil {
-				return nil, err
+			simpleTag, errParseSimpleTag := mp.parseSimpleTag(element.Data)
+			if errParseSimpleTag != nil {
+				return nil, errParseSimpleTag
 			}
 			tag.SimpleTags = append(tag.SimpleTags, simpleTag)
 		}
@@ -1117,26 +1132,28 @@ func (mp *MatroskaParser) parseSimpleTag(data []byte) (SimpleTag, error) {
 //   - error: An error if the Attachments element could not be parsed.
 func (mp *MatroskaParser) parseAttachments(size uint64) error {
 	data := make([]byte, size)
-	if _, err := io.ReadFull(mp.reader.r, data); err != nil {
+	n, err := io.ReadFull(mp.reader.r, data)
+	if err != nil {
 		return err
 	}
+	mp.reader.pos += int64(n)
 
 	reader := bytes.NewReader(data)
 	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
 
 	for childReader.pos < int64(size) {
-		element, err := childReader.ReadElement()
-		if err != nil {
-			if err == io.EOF {
+		element, errReadElement := childReader.ReadElement()
+		if errReadElement != nil {
+			if errReadElement == io.EOF {
 				break
 			}
-			return err
+			return errReadElement
 		}
 
 		if element.ID == IDAttachedFile {
-			attachment, err := mp.parseAttachedFile(element.Data)
-			if err != nil {
-				return err
+			attachment, errParseAttachedFile := mp.parseAttachedFile(element.Data)
+			if errParseAttachedFile != nil {
+				return errParseAttachedFile
 			}
 			mp.attachments = append(mp.attachments, attachment)
 		}
@@ -1241,13 +1258,15 @@ func (mp *MatroskaParser) ReadPacket() (*Packet, error) {
 				switch childID {
 				case IDTimestamp:
 					data := make([]byte, childSize)
-					if _, err := io.ReadFull(mp.reader.r, data); err != nil {
-						return nil, err
+					if n, errReadFull := io.ReadFull(mp.reader.r, data); errReadFull != nil {
+						return nil, errReadFull
+					} else {
+						mp.reader.pos += int64(n)
 					}
 					element := &EBMLElement{ID: childID, Size: childSize, Data: data}
 					mp.clusterTimestamp = element.ReadUInt()
 				case IDSimpleBlock:
-					packet, parseErr := mp.parseSimpleBlock(childSize)
+					packet, parseErr = mp.parseSimpleBlock(childSize)
 					if parseErr != nil {
 						return nil, parseErr
 					}
@@ -1257,7 +1276,7 @@ func (mp *MatroskaParser) ReadPacket() (*Packet, error) {
 						}
 					}
 				case IDBlockGroup:
-					packet, parseErr := mp.parseBlockGroup(childSize)
+					packet, parseErr = mp.parseBlockGroup(childSize)
 					if parseErr != nil {
 						return nil, parseErr
 					}
@@ -1283,8 +1302,10 @@ func (mp *MatroskaParser) ReadPacket() (*Packet, error) {
 		case IDTimestamp:
 			// Update cluster timestamp
 			data := make([]byte, size)
-			if _, err = io.ReadFull(mp.reader.r, data); err != nil {
-				return nil, err
+			if n, errReadFull := io.ReadFull(mp.reader.r, data); errReadFull != nil {
+				return nil, errReadFull
+			} else {
+				mp.reader.pos += int64(n)
 			}
 			element := &EBMLElement{ID: id, Size: size, Data: data}
 			mp.clusterTimestamp = element.ReadUInt()
@@ -1329,27 +1350,29 @@ func (mp *MatroskaParser) ReadPacket() (*Packet, error) {
 func (mp *MatroskaParser) parseClusterHeader(size uint64) error {
 	// We need to find the timestamp of the cluster.
 	data := make([]byte, size)
-	if _, err := io.ReadFull(mp.reader.r, data); err != nil {
+	n, err := io.ReadFull(mp.reader.r, data)
+	if err != nil {
 		return err
 	}
+	mp.reader.pos += int64(n)
 
 	reader := bytes.NewReader(data)
 	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
 
 	for childReader.pos < int64(len(data)) {
-		element, err := childReader.ReadElement()
-		if err != nil {
-			if err == io.EOF {
+		element, errReadElement := childReader.ReadElement()
+		if errReadElement != nil {
+			if errReadElement == io.EOF {
 				break
 			}
-			return err
+			return errReadElement
 		}
 
 		if element.ID == IDTimestamp {
 			mp.clusterTimestamp = element.ReadUInt()
 			// We found the timestamp, but we need to continue parsing the rest of the cluster
 			// so we have to seek back.
-			if _, err := mp.reader.Seek(int64(-size), io.SeekCurrent); err != nil {
+			if _, err = mp.reader.Seek(int64(-size), io.SeekCurrent); err != nil {
 				return err
 			}
 			return nil
@@ -1357,7 +1380,7 @@ func (mp *MatroskaParser) parseClusterHeader(size uint64) error {
 	}
 
 	// Timestamp not found, which is weird, but let's seek back to where we were.
-	if _, err := mp.reader.Seek(int64(-size), io.SeekCurrent); err != nil {
+	if _, err = mp.reader.Seek(int64(-size), io.SeekCurrent); err != nil {
 		return err
 	}
 	mp.clusterTimestamp = 0
@@ -1391,9 +1414,11 @@ func (mp *MatroskaParser) parseClusterHeader(size uint64) error {
 //   - error: An error if the SimpleBlock element could not be parsed.
 func (mp *MatroskaParser) parseSimpleBlock(size uint64) (*Packet, error) {
 	data := make([]byte, size)
-	if _, err := io.ReadFull(mp.reader.r, data); err != nil {
+	n, err := io.ReadFull(mp.reader.r, data)
+	if err != nil {
 		return nil, err
 	}
+	mp.reader.pos += int64(n)
 
 	if len(data) < 4 {
 		return nil, fmt.Errorf("block too short")
@@ -1454,18 +1479,18 @@ func (mp *MatroskaParser) parseSimpleBlock(size uint64) (*Packet, error) {
 
 				// Parse sizes for all frames except the last one
 				for i := 0; i < frameCount-1; i++ {
-					size := 0
+					dataSize := 0
 					// Xiph lacing: sizes are encoded as a series of 255 bytes
 					// followed by the remainder
 					for offset < len(frameData) && frameData[offset] == 0xFF {
-						size += 255
+						dataSize += 255
 						offset++
 					}
 					if offset < len(frameData) {
-						size += int(frameData[offset])
+						dataSize += int(frameData[offset])
 						offset++
 					}
-					frameSizes[i] = size
+					frameSizes[i] = dataSize
 				}
 
 				// Last frame size is the remainder
@@ -1487,7 +1512,7 @@ func (mp *MatroskaParser) parseSimpleBlock(size uint64) (*Packet, error) {
 		}
 	}
 
-	scaledTime := (mp.clusterTimestamp + uint64(int64(timestamp))) * mp.fileInfo.TimecodeScale
+	scaledTime := (mp.clusterTimestamp + uint64(timestamp)) * mp.fileInfo.TimecodeScale
 	packet := &Packet{
 		Track:     uint8(trackNum),
 		StartTime: scaledTime,
@@ -1529,9 +1554,11 @@ func (mp *MatroskaParser) parseSimpleBlock(size uint64) (*Packet, error) {
 //   - error: An error if the BlockGroup element could not be parsed.
 func (mp *MatroskaParser) parseBlockGroup(size uint64) (*Packet, error) {
 	data := make([]byte, size)
-	if _, err := io.ReadFull(mp.reader.r, data); err != nil {
+	n, err := io.ReadFull(mp.reader.r, data)
+	if err != nil {
 		return nil, err
 	}
+	mp.reader.pos += int64(n)
 
 	reader := bytes.NewReader(data)
 	childReader := &EBMLReader{r: &seekableReader{reader}, pos: 0}
@@ -1540,12 +1567,12 @@ func (mp *MatroskaParser) parseBlockGroup(size uint64) (*Packet, error) {
 	var duration uint64
 
 	for childReader.pos < int64(len(data)) {
-		element, err := childReader.ReadElement()
-		if err != nil {
-			if err == io.EOF {
+		element, errReadElement := childReader.ReadElement()
+		if errReadElement != nil {
+			if errReadElement == io.EOF {
 				break
 			}
-			return nil, err
+			return nil, errReadElement
 		}
 
 		switch element.ID {
@@ -1564,7 +1591,7 @@ func (mp *MatroskaParser) parseBlockGroup(size uint64) (*Packet, error) {
 			timestamp := int16(blockData[trackBytes])<<8 | int16(blockData[trackBytes+1])
 			frameData := blockData[trackBytes+3:] // Skip flags byte
 
-			scaledTime := (mp.clusterTimestamp + uint64(int64(timestamp))) * mp.fileInfo.TimecodeScale
+			scaledTime := (mp.clusterTimestamp + uint64(timestamp)) * mp.fileInfo.TimecodeScale
 			packet = &Packet{
 				Track:     uint8(trackNum),
 				StartTime: scaledTime,
