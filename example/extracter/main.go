@@ -72,7 +72,7 @@ func formatSRTEntry(index int, packet *matroska.Packet) string {
 //
 // Parameters:
 //
-//	ms uint64: Time duration in milliseconds.
+//	ms uint64: Time duration in nanoseconds.
 //
 // Returns:
 //
@@ -85,13 +85,13 @@ func formatSRTEntry(index int, packet *matroska.Packet) string {
 // Example:
 //
 //	formatSRTTime(3661123) returns "01:01:01,123".
-func formatSRTTime(ms uint64) string {
-	hours := ms / 3600000
-	ms %= 3600000
-	minutes := ms / 60000
-	ms %= 60000
-	seconds := ms / 1000
-	milliseconds := ms % 1000
+func formatSRTTime(ns uint64) string {
+	hours := ns / 3600000000000
+	ns %= 3600000000000
+	minutes := ns / 60000000000
+	ns %= 60000000000
+	seconds := ns / 1000000000
+	milliseconds := ns % 1000000000 / 1000000
 
 	return fmt.Sprintf("%02d:%02d:%02d,%03d", hours, minutes, seconds, milliseconds)
 }
