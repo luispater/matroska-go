@@ -467,6 +467,21 @@ func TestParseVideoTrack(t *testing.T) {
 		}
 		// Should handle empty data gracefully
 	})
+
+	// Cover interlaced flag branch
+	t.Run("Interlaced flag", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		// FlagInterlaced: 1
+		buf.Write([]byte{0x9A, 0x81, 0x01})
+		parser := &MatroskaParser{}
+		track := &TrackInfo{}
+		if err := parser.parseVideoTrack(buf.Bytes(), track); err != nil {
+			t.Fatalf("parseVideoTrack() failed: %v", err)
+		}
+		if !track.Video.Interlaced {
+			t.Errorf("expected interlaced=true")
+		}
+	})
 }
 
 // TestParseAudioTrack tests the parsing of audio track data.
@@ -1673,6 +1688,59 @@ func TestReadPacket_Comprehensive(t *testing.T) {
 		}
 		// Packet might be nil if filtered by mask
 		_ = packet
+	})
+
+	// Unknown child inside cluster should be skipped gracefully
+	t.Run("Cluster with unknown child skipped", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		// Header
+		eh := new(bytes.Buffer)
+		eh.Write([]byte{0x42, 0x82, 0x88, 'm', 'a', 't', 'r', 'o', 's', 'k', 'a'})
+		buf.Write([]byte{0x1A, 0x45, 0xDF, 0xA3})
+		buf.Write(vintEncode(uint64(eh.Len())))
+		buf.Write(eh.Bytes())
+		// Segment
+		seg := new(bytes.Buffer)
+		si := new(bytes.Buffer)
+		si.Write([]byte{0x2A, 0xD7, 0xB1, 0x83, 0x0F, 0x42, 0x40})
+		seg.Write([]byte{0x15, 0x49, 0xA9, 0x66})
+		seg.Write(vintEncode(uint64(si.Len())))
+		seg.Write(si.Bytes())
+		te, _ := createMockTrackEntry(1, TypeVideo, "V", "V", "und")
+		trs := new(bytes.Buffer)
+		trs.Write([]byte{0xAE})
+		trs.Write(vintEncode(uint64(len(te))))
+		trs.Write(te)
+		seg.Write([]byte{0x16, 0x54, 0xAE, 0x6B})
+		seg.Write(vintEncode(uint64(trs.Len())))
+		seg.Write(trs.Bytes())
+		// Cluster with unknown child before SimpleBlock
+		cl := new(bytes.Buffer)
+		cl.Write([]byte{0xE7, 0x81, 0x00}) // Timestamp 0
+		// Unknown child with a valid 1-byte ID (0x81), size 2, data 0x00 0x01
+		cl.Write([]byte{0x81, 0x82, 0x00, 0x01})
+		b := []byte{0x81, 0x00, 0x00, 0x80, 'K'}
+		cl.Write([]byte{0xA3})
+		cl.Write(vintEncode(uint64(len(b))))
+		cl.Write(b)
+		seg.Write([]byte{0x1F, 0x43, 0xB6, 0x75})
+		seg.Write(vintEncode(uint64(cl.Len())))
+		seg.Write(cl.Bytes())
+		buf.Write([]byte{0x18, 0x53, 0x80, 0x67})
+		buf.Write(vintEncode(uint64(seg.Len())))
+		buf.Write(seg.Bytes())
+
+		p, err := NewMatroskaParser(bytes.NewReader(buf.Bytes()), false)
+		if err != nil {
+			t.Fatalf("NewMatroskaParser failed: %v", err)
+		}
+		pkt, err := p.ReadPacket()
+		if err != nil {
+			t.Fatalf("ReadPacket failed: %v", err)
+		}
+		if string(pkt.Data) != "K" || (pkt.Flags&KF) == 0 {
+			t.Errorf("unexpected pkt: %+v", pkt)
+		}
 	})
 }
 
@@ -3116,6 +3184,249 @@ func TestParser_Seek_EdgeCases(t *testing.T) {
 	})
 }
 
+// TestParseVideoTrack_Defaults verifies Display* defaults from Pixel* when absent.
+func TestParseVideoTrack_Defaults(t *testing.T) {
+	// Only PixelWidth/PixelHeight provided; DisplayWidth/Height should default to Pixel*
+	buf := new(bytes.Buffer)
+	// PixelWidth: 640
+	buf.Write([]byte{0xB0, 0x82, 0x02, 0x80})
+	// PixelHeight: 360
+	buf.Write([]byte{0xBA, 0x82, 0x01, 0x68})
+
+	parser := &MatroskaParser{}
+	track := &TrackInfo{}
+	if err := parser.parseVideoTrack(buf.Bytes(), track); err != nil {
+		t.Fatalf("parseVideoTrack() failed: %v", err)
+	}
+	if track.Video.DisplayWidth != track.Video.PixelWidth || track.Video.DisplayHeight != track.Video.PixelHeight {
+		t.Errorf("Display defaults not applied: got %dx%d disp vs %dx%d pixel", track.Video.DisplayWidth, track.Video.DisplayHeight, track.Video.PixelWidth, track.Video.PixelHeight)
+	}
+}
+
+// TestParseAudioTrack_Defaults verifies default channel/freq and OutputSamplingFreq fallback.
+func TestParseAudioTrack_Defaults(t *testing.T) {
+	parser := &MatroskaParser{}
+	track := &TrackInfo{}
+	// No fields set -> defaults apply
+	if err := parser.parseAudioTrack([]byte{}, track); err != nil {
+		t.Fatalf("parseAudioTrack(empty) failed: %v", err)
+	}
+	if track.Audio.Channels != 1 || track.Audio.SamplingFreq != 8000.0 || track.Audio.OutputSamplingFreq != 8000.0 {
+		t.Errorf("unexpected audio defaults: %+v", track.Audio)
+	}
+
+	// Only SamplingFrequency set -> OutputSamplingFreq should mirror it when absent
+	buf := new(bytes.Buffer)
+	sf := math.Float64bits(22050.0)
+	buf.Write([]byte{0xB5, 0x88})
+	_ = binary.Write(buf, binary.BigEndian, sf)
+	track2 := &TrackInfo{}
+	if err := parser.parseAudioTrack(buf.Bytes(), track2); err != nil {
+		t.Fatalf("parseAudioTrack(sfreq) failed: %v", err)
+	}
+	if track2.Audio.SamplingFreq != 22050.0 || track2.Audio.OutputSamplingFreq != 22050.0 {
+		t.Errorf("output sampling fallback failed: %+v", track2.Audio)
+	}
+}
+
+// TestParseCuePoint_Full covers additional fields in cue track positions.
+func TestParseCuePoint_Full(t *testing.T) {
+	// Build CuePoint with time and full CueTrackPositions
+	cue := new(bytes.Buffer)
+	// CueTime = 7
+	cue.Write([]byte{0xB3, 0x81, 0x07})
+	// CueTrackPositions
+	ctp := new(bytes.Buffer)
+	ctp.Write([]byte{0xF7, 0x81, 0x02})       // Track 2
+	ctp.Write([]byte{0xF1, 0x81, 0x64})       // ClusterPos 100
+	ctp.Write([]byte{0xF0, 0x81, 0x05})       // RelativePos 5
+	ctp.Write([]byte{0x53, 0x78, 0x81, 0x03}) // BlockNum 3
+	ctp.Write([]byte{0x9B, 0x81, 0x02})       // Duration 2
+	cue.Write([]byte{0xB7})
+	cue.Write(vintEncode(uint64(ctp.Len())))
+	cue.Write(ctp.Bytes())
+
+	mp := &MatroskaParser{fileInfo: &SegmentInfo{TimecodeScale: 1000000}}
+	cues, err := mp.parseCuePoint(cue.Bytes())
+	if err != nil {
+		t.Fatalf("parseCuePoint failed: %v", err)
+	}
+	if len(cues) != 1 {
+		t.Fatalf("expected 1 cue, got %d", len(cues))
+	}
+	got := cues[0]
+	if got.Track != 2 || got.Position != 100 || got.RelativePosition != 5 || got.Block != 3 || got.Duration != 2*mp.fileInfo.TimecodeScale {
+		t.Errorf("unexpected cue fields: %+v", got)
+	}
+	if got.Time != 7*mp.fileInfo.TimecodeScale {
+		t.Errorf("unexpected scaled time: %d", got.Time)
+	}
+}
+
+// TestParseBlockGroup_WithDuration verifies duration affects EndTime.
+func TestParseBlockGroup_WithDuration(t *testing.T) {
+	// Construct a BlockGroup with Block and BlockDuration=4
+	block := []byte{0x81, 0x00, 0x00, 0x00, 'D'} // track 1, ts 0, flags 0x00, data 'D'
+	bg := new(bytes.Buffer)
+	// Block
+	bg.Write([]byte{0xA1})
+	bg.Write(vintEncode(uint64(len(block))))
+	bg.Write(block)
+	// BlockDuration = 4
+	bg.Write([]byte{0x9B, 0x81, 0x04})
+
+	mp := &MatroskaParser{reader: NewEBMLReader(bytes.NewReader(bg.Bytes())), fileInfo: &SegmentInfo{TimecodeScale: 1000000}}
+	pkt, err := mp.parseBlockGroup(uint64(bg.Len()))
+	if err != nil {
+		t.Fatalf("parseBlockGroup failed: %v", err)
+	}
+	if pkt == nil || pkt.Track != 1 {
+		t.Fatalf("unexpected packet: %+v", pkt)
+	}
+	if pkt.EndTime-pkt.StartTime != 4*mp.fileInfo.TimecodeScale {
+		t.Errorf("duration not applied: start=%d end=%d", pkt.StartTime, pkt.EndTime)
+	}
+}
+
+// TestReadPacket_TopLevelTimestamp_And_Mask exercises top-level Timestamp and mask filtering.
+func TestReadPacket_TopLevelTimestamp_And_Mask(t *testing.T) {
+	makeFile := func() []byte {
+		buf := new(bytes.Buffer)
+		// EBML Header
+		eh := new(bytes.Buffer)
+		eh.Write([]byte{0x42, 0x82, 0x88, 'm', 'a', 't', 'r', 'o', 's', 'k', 'a'})
+		buf.Write([]byte{0x1A, 0x45, 0xDF, 0xA3})
+		buf.Write(vintEncode(uint64(eh.Len())))
+		buf.Write(eh.Bytes())
+		// Segment
+		seg := new(bytes.Buffer)
+		// Info TS scale
+		si := new(bytes.Buffer)
+		si.Write([]byte{0x2A, 0xD7, 0xB1, 0x83, 0x0F, 0x42, 0x40})
+		seg.Write([]byte{0x15, 0x49, 0xA9, 0x66})
+		seg.Write(vintEncode(uint64(si.Len())))
+		seg.Write(si.Bytes())
+		// Tracks (1 video)
+		te, _ := createMockTrackEntry(1, TypeVideo, "V", "V", "und")
+		trs := new(bytes.Buffer)
+		trs.Write([]byte{0xAE})
+		trs.Write(vintEncode(uint64(len(te))))
+		trs.Write(te)
+		seg.Write([]byte{0x16, 0x54, 0xAE, 0x6B})
+		seg.Write(vintEncode(uint64(trs.Len())))
+		seg.Write(trs.Bytes())
+		// First add an empty Cluster (so parseSegmentChildren returns early and ReadPacket drives parsing)
+		cl := new(bytes.Buffer)
+		cl.Write([]byte{0xE7, 0x81, 0x00}) // Timestamp 0
+		seg.Write([]byte{0x1F, 0x43, 0xB6, 0x75})
+		seg.Write(vintEncode(uint64(cl.Len())))
+		seg.Write(cl.Bytes())
+		// Then add a top-level Timestamp element and a SimpleBlock
+		seg.Write([]byte{0xE7}) // IDTimestamp at top-level
+		seg.Write(vintEncode(2))
+		seg.Write([]byte{0x03, 0xE8})             // 1000
+		sb := []byte{0x81, 0x00, 0x00, 0x80, 'X'} // keyframe block
+		seg.Write([]byte{0xA3})
+		seg.Write(vintEncode(uint64(len(sb))))
+		seg.Write(sb)
+		// Wrap segment
+		buf.Write([]byte{0x18, 0x53, 0x80, 0x67})
+		buf.Write(vintEncode(uint64(seg.Len())))
+		buf.Write(seg.Bytes())
+		return buf.Bytes()
+	}
+
+	// Normal read: should get one packet with scaled time using top-level timestamp
+	p, err := NewMatroskaParser(bytes.NewReader(makeFile()), false)
+	if err != nil {
+		t.Fatalf("NewMatroskaParser failed: %v", err)
+	}
+	pkt, err := p.ReadPacket()
+	if err != nil {
+		t.Fatalf("ReadPacket failed: %v", err)
+	}
+	if (pkt.Flags&KF) == 0 || pkt.Track != 1 {
+		t.Errorf("unexpected packet: %+v", pkt)
+	}
+
+	// Mask out track 1 and attempt to read -> should hit EOF (filtered)
+	p2, err := NewMatroskaParser(bytes.NewReader(makeFile()), false)
+	if err != nil {
+		t.Fatalf("NewMatroskaParser failed: %v", err)
+	}
+	p2.SetTrackMask(0x01) // ignore track 1
+	pkt2, err := p2.ReadPacket()
+	if err == nil || err != io.EOF || pkt2 != nil {
+		t.Errorf("expected EOF due to mask, got pkt=%v err=%v", pkt2, err)
+	}
+}
+
+// TestSkipToKeyframe_Behavior ensures it consumes up to next keyframe.
+func TestSkipToKeyframe_Behavior(t *testing.T) {
+	// Build a stream: non-keyframe, keyframe, then a third frame
+	mk := func() []byte {
+		buf := new(bytes.Buffer)
+		eh := new(bytes.Buffer)
+		eh.Write([]byte{0x42, 0x82, 0x88, 'm', 'a', 't', 'r', 'o', 's', 'k', 'a'})
+		buf.Write([]byte{0x1A, 0x45, 0xDF, 0xA3})
+		buf.Write(vintEncode(uint64(eh.Len())))
+		buf.Write(eh.Bytes())
+		seg := new(bytes.Buffer)
+		// TS scale
+		si := new(bytes.Buffer)
+		si.Write([]byte{0x2A, 0xD7, 0xB1, 0x83, 0x0F, 0x42, 0x40})
+		seg.Write([]byte{0x15, 0x49, 0xA9, 0x66})
+		seg.Write(vintEncode(uint64(si.Len())))
+		seg.Write(si.Bytes())
+		te, _ := createMockTrackEntry(1, TypeVideo, "V", "V", "und")
+		trs := new(bytes.Buffer)
+		trs.Write([]byte{0xAE})
+		trs.Write(vintEncode(uint64(len(te))))
+		trs.Write(te)
+		seg.Write([]byte{0x16, 0x54, 0xAE, 0x6B})
+		seg.Write(vintEncode(uint64(trs.Len())))
+		seg.Write(trs.Bytes())
+		cl := new(bytes.Buffer)
+		cl.Write([]byte{0xE7, 0x81, 0x00}) // ts 0
+		// non-keyframe
+		b1 := []byte{0x81, 0x00, 0x00, 0x00, 'a'}
+		cl.Write([]byte{0xA3})
+		cl.Write(vintEncode(uint64(len(b1))))
+		cl.Write(b1)
+		// keyframe
+		b2 := []byte{0x81, 0x00, 0x00, 0x80, 'b'}
+		cl.Write([]byte{0xA3})
+		cl.Write(vintEncode(uint64(len(b2))))
+		cl.Write(b2)
+		// third
+		b3 := []byte{0x81, 0x00, 0x00, 0x00, 'c'}
+		cl.Write([]byte{0xA3})
+		cl.Write(vintEncode(uint64(len(b3))))
+		cl.Write(b3)
+		seg.Write([]byte{0x1F, 0x43, 0xB6, 0x75})
+		seg.Write(vintEncode(uint64(cl.Len())))
+		seg.Write(cl.Bytes())
+		buf.Write([]byte{0x18, 0x53, 0x80, 0x67})
+		buf.Write(vintEncode(uint64(seg.Len())))
+		buf.Write(seg.Bytes())
+		return buf.Bytes()
+	}
+
+	p, err := NewMatroskaParser(bytes.NewReader(mk()), false)
+	if err != nil {
+		t.Fatalf("NewMatroskaParser failed: %v", err)
+	}
+	p.SkipToKeyframe()
+	// Next packet should be the one after the keyframe (i.e., 'c')
+	pkt, err := p.ReadPacket()
+	if err != nil {
+		t.Fatalf("ReadPacket after SkipToKeyframe failed: %v", err)
+	}
+	if string(pkt.Data) != "c" {
+		t.Errorf("expected 'c' after SkipToKeyframe, got %q", string(pkt.Data))
+	}
+}
+
 func TestParseSegmentInfo_Rich(t *testing.T) {
 	buf := new(bytes.Buffer)
 	// EBML Header
@@ -3497,6 +3808,66 @@ func TestParseSimpleBlock_LacingVariants(t *testing.T) {
 	}
 	if len(pkt2.Data) == 0 {
 		t.Errorf("expected non-empty data for EBML lacing")
+	}
+}
+
+// Fixed-size lacing variant to cover 0x02 branch
+func TestParseSimpleBlock_LacingFixed(t *testing.T) {
+	// Build fixed-size laced SimpleBlock with 2 frames of equal size
+	// Flags: keyframe + fixed lacing (0x80 | 0x02)
+	// header: track 1, ts 0
+	header := []byte{0x81, 0x00, 0x00, 0x82}
+	// frame count-1 = 1
+	// payload two frames: "AB" and "CD"
+	payload := append([]byte{0x01}, []byte{'A', 'B', 'C', 'D'}...)
+	block := append(header, payload...)
+
+	// Wrap in a minimal cluster + segment so ReadPacket parses it
+	file := func() []byte {
+		buf := new(bytes.Buffer)
+		eh := new(bytes.Buffer)
+		eh.Write([]byte{0x42, 0x82, 0x88, 'm', 'a', 't', 'r', 'o', 's', 'k', 'a'})
+		buf.Write([]byte{0x1A, 0x45, 0xDF, 0xA3})
+		buf.Write(vintEncode(uint64(eh.Len())))
+		buf.Write(eh.Bytes())
+		seg := new(bytes.Buffer)
+		si := new(bytes.Buffer)
+		si.Write([]byte{0x2A, 0xD7, 0xB1, 0x83, 0x0F, 0x42, 0x40})
+		seg.Write([]byte{0x15, 0x49, 0xA9, 0x66})
+		seg.Write(vintEncode(uint64(si.Len())))
+		seg.Write(si.Bytes())
+		te, _ := createMockTrackEntry(1, TypeVideo, "V", "V", "und")
+		trs := new(bytes.Buffer)
+		trs.Write([]byte{0xAE})
+		trs.Write(vintEncode(uint64(len(te))))
+		trs.Write(te)
+		seg.Write([]byte{0x16, 0x54, 0xAE, 0x6B})
+		seg.Write(vintEncode(uint64(trs.Len())))
+		seg.Write(trs.Bytes())
+		cl := new(bytes.Buffer)
+		cl.Write([]byte{0xE7, 0x81, 0x00})
+		cl.Write([]byte{0xA3})
+		cl.Write(vintEncode(uint64(len(block))))
+		cl.Write(block)
+		seg.Write([]byte{0x1F, 0x43, 0xB6, 0x75})
+		seg.Write(vintEncode(uint64(cl.Len())))
+		seg.Write(cl.Bytes())
+		buf.Write([]byte{0x18, 0x53, 0x80, 0x67})
+		buf.Write(vintEncode(uint64(seg.Len())))
+		buf.Write(seg.Bytes())
+		return buf.Bytes()
+	}()
+
+	p, err := NewMatroskaParser(bytes.NewReader(file), false)
+	if err != nil {
+		t.Fatalf("parser err: %v", err)
+	}
+	pkt, err := p.ReadPacket()
+	if err != nil {
+		t.Fatalf("ReadPacket err: %v", err)
+	}
+	if string(pkt.Data) != "AB" {
+		t.Errorf("expected first fixed-laced frame 'AB', got %q", string(pkt.Data))
 	}
 }
 

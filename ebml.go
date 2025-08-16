@@ -280,17 +280,20 @@ func (er *EBMLReader) ReadVIntID() (uint64, error) {
 //   - An error if the read operation failed or the VINT is invalid
 func (er *EBMLReader) readVInt(keepLengthMarker bool) (uint64, error) {
 	var b [1]byte
-	if _, err := er.r.Read(b[:]); err != nil {
-		return 0, err
-	}
 
-	er.pos++
+	// Skip any 0x00 padding bytes to resync to the next element/header
+	for {
+		if _, err := er.r.Read(b[:]); err != nil {
+			return 0, err
+		}
+		er.pos++
+		if b[0] != 0x00 {
+			break
+		}
+	}
 
 	// Find the number of bytes to read based on the first bit pattern
 	firstByte := b[0]
-	if firstByte == 0 {
-		return 0, fmt.Errorf("invalid VINT: first byte is 0")
-	}
 
 	// Count leading zeros to determine length
 	var length int
